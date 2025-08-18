@@ -1,0 +1,28 @@
+{
+  "default": [
+    "user_management",
+    "payment_processing",
+    "data_analytics"
+  ],
+  "planner": [
+    "user_management",
+    "payment_processing",
+    "data_analytics"
+  ],
+  "orchestrator": [
+    "user_management",
+    "payment_processing",
+    "data_analytics"
+  ],
+  "ExampleAgent": [
+    "user_management"
+  ],
+  "CustomerServiceAgent": [
+    "user_management",
+    "payment_processing"
+  ],
+  "AnalyticsAgent": [
+    "data_analytics",
+    "user_management"
+  ]
+}
