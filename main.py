@@ -6,6 +6,7 @@ import uvicorn
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from prometheus_client import Counter, Histogram, generate_latest, CONTENT_TYPE_LATEST
 from dotenv import load_dotenv
 import logging
 import sys
@@ -30,6 +31,9 @@ logging.basicConfig(
 )
 
 logger = logging.getLogger(__name__)
+# Basic metrics
+REQUEST_COUNT = Counter("semanticx_requests_total", "Total HTTP requests", ["endpoint", "method", "status"])
+REQUEST_LATENCY = Histogram("semanticx_request_latency_seconds", "Request latency", ["endpoint"]) 
 
 # Suppress noisy logs
 logging.getLogger('uvicorn.access').setLevel(logging.WARNING)
@@ -119,6 +123,10 @@ async def root():
         "docs": "/docs",
         "health": "/health"
     }
+@app.get("/metrics")
+async def metrics():
+    content = generate_latest()
+    return JSONResponse(content=content, media_type=CONTENT_TYPE_LATEST)
 
 
 # Health check endpoint

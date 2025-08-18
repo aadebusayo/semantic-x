@@ -1,109 +1,114 @@
 """
 LLM Service for SemanticX Framework.
-Provides interface for different LLM providers.
+Provides interface for different LLM providers with retry and simple error handling.
 """
 import logging
 from typing import Dict, Any, List, Optional
 import json
+import asyncio
+from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
+
+from config import get_llm_config
 
 logger = logging.getLogger(__name__)
 
 
 class LLMService:
-    """
-    Service for interacting with Language Models.
-    Supports multiple providers with a unified interface.
-    """
-    
-    def __init__(self):
-        self.provider = "openai"  # Default provider
-        self.model = "gpt-4"
-        self.temperature = 0.1
-        self.max_tokens = 1000
-        logger.info(f"LLMService initialized with provider: {self.provider}")
-    
-    async def generate_completion(
-        self, 
-        messages: List[Dict[str, str]], 
-        tools: Optional[List[Dict[str, Any]]] = None,
-        tool_choice: Optional[str] = None,
-        max_tokens: Optional[int] = None,
-        temperature: Optional[float] = None
-    ) -> Dict[str, Any]:
-        """
-        Generate a completion from the LLM.
-        
-        Args:
-            messages: List of message dictionaries
-            tools: Optional list of available tools
-            tool_choice: How to handle tool selection
-            max_tokens: Maximum tokens to generate
-            temperature: Sampling temperature
-            
-        Returns:
-            Dict containing the LLM response
-        """
-        try:
-            # For now, return a mock response
-            # This should be implemented with actual LLM provider integration
-            logger.info(f"Generating completion with {len(messages)} messages")
-            
-            if tools:
-                logger.info(f"Tools available: {[t.get('function', {}).get('name', 'unknown') for t in tools]}")
-            
-            # Mock response - replace with actual LLM call
-            mock_response = {
-                "content": "This is a mock response. Please implement actual LLM integration.",
-                "model": self.model,
-                "usage": {"total_tokens": 50}
-            }
-            
-            # If tools are available, simulate tool choice
-            if tools and tool_choice == "auto":
-                mock_response["tool_calls"] = [
-                    {
-                        "id": "mock_tool_call_1",
-                        "type": "function",
-                        "function": {
-                            "name": tools[0].get('function', {}).get('name', 'mock_tool'),
-                            "arguments": json.dumps({"input": "mock_input"})
-                        }
-                    }
-                ]
-            
-            return mock_response
-            
-        except Exception as e:
-            logger.error(f"LLM completion failed: {e}", exc_info=True)
-            return {
-                "content": f"Error generating response: {str(e)}",
-                "error": True
-            }
-    
-    def set_provider(self, provider: str):
-        """Set the LLM provider."""
-        self.provider = provider
-        logger.info(f"LLM provider set to: {provider}")
-    
-    def set_model(self, model: str):
-        """Set the LLM model."""
-        self.model = model
-        logger.info(f"LLM model set to: {model}")
-    
-    def set_parameters(self, temperature: float = None, max_tokens: int = None):
-        """Set LLM parameters."""
-        if temperature is not None:
-            self.temperature = temperature
-        if max_tokens is not None:
-            self.max_tokens = max_tokens
-        logger.info(f"LLM parameters updated: temp={self.temperature}, max_tokens={self.max_tokens}")
-    
-    async def test_connection(self) -> bool:
-        """Test connection to the LLM provider."""
-        try:
-            # Implement actual connection test
-            logger.info("LLM connection test successful")
-            return True
-        except Exception as e:
-            logger.error(f"LLM connection test failed: {e}")
-            return False
+	"""
+	Service for interacting with Language Models.
+	Supports multiple providers with a unified interface.
+	"""
+	
+	def __init__(self):
+		cfg = get_llm_config()
+		self.provider = cfg.get("provider", "openai").lower()
+		self.model = cfg.get("model", "gpt-4o-mini")
+		self.temperature = cfg.get("temperature", 0.1)
+		self.max_tokens = cfg.get("max_tokens", 1000)
+		self._client = None
+		self._init_client(cfg)
+		logger.info(f"LLMService initialized: provider={self.provider}, model={self.model}")
+	
+	def _init_client(self, cfg: Dict[str, Any]):
+		if self.provider == "openai":
+			try:
+				from openai import AsyncOpenAI
+				api_key = cfg.get("api_key")
+				base_url = cfg.get("base_url")
+				self._client = AsyncOpenAI(api_key=api_key, base_url=base_url) if base_url else AsyncOpenAI(api_key=api_key)
+			except Exception as e:
+				logger.warning(f"OpenAI client not available or API key missing; falling back to mock. {e}")
+				self._client = None
+		else:
+			self._client = None
+	
+	@retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=0.5, min=0.5, max=4), reraise=True)
+	async def _openai_chat(self, messages: List[Dict[str, str]], tools: Optional[List[Dict[str, Any]]], tool_choice: Optional[str], max_tokens: Optional[int], temperature: Optional[float]) -> Dict[str, Any]:
+		from openai import AsyncOpenAI
+		assert self._client is not None
+		response = await self._client.chat.completions.create(
+			model=self.model,
+			messages=messages,
+			tools=tools,
+			tool_choice=tool_choice,
+			max_tokens=max_tokens or self.max_tokens,
+			temperature=temperature if temperature is not None else self.temperature,
+		)
+		choice = response.choices[0]
+		result: Dict[str, Any] = {
+			"content": choice.message.content if choice.message else "",
+		}
+		# Convert OpenAI tool calls to our dict shape
+		if choice.message and getattr(choice.message, "tool_calls", None):
+			converted = []
+			for tc in choice.message.tool_calls:
+				converted.append({
+					"id": tc.id,
+					"type": "function",
+					"function": {
+						"name": tc.function.name,
+						"arguments": tc.function.arguments,
+					}
+				})
+			result["tool_calls"] = converted
+		return result
+	
+	async def generate_completion(
+		self,
+		messages: List[Dict[str, str]],
+		tools: Optional[List[Dict[str, Any]]] = None,
+		tool_choice: Optional[str] = None,
+		max_tokens: Optional[int] = None,
+		temperature: Optional[float] = None
+	) -> Dict[str, Any]:
+		"""
+		Generate a completion from the LLM with retries and provider fallback.
+		"""
+		try:
+			if self.provider == "openai" and self._client is not None:
+				return await self._openai_chat(messages, tools, tool_choice, max_tokens, temperature)
+			# Fallback mock
+			logger.info("Using mock LLM response (no provider configured)")
+			mock_response = {
+				"content": "This is a mock response. Configure OPENAI_API_KEY to enable real completions.",
+			}
+			if tools and tool_choice == "auto":
+				mock_response["tool_calls"] = [{
+					"id": "mock_tool_call_1",
+					"type": "function",
+					"function": {
+						"name": tools[0].get('function', {}).get('name', 'mock_tool'),
+						"arguments": json.dumps({"input": "mock_input"})
+					}
+				}]
+			return mock_response
+		except Exception as e:
+			logger.error(f"LLM completion failed: {e}", exc_info=True)
+			return {"content": f"Error generating response: {str(e)}", "error": True}
+	
+	async def test_connection(self) -> bool:
+		try:
+			_ = await self.generate_completion(messages=[{"role": "user", "content": "ping"}])
+			return True
+		except Exception:
+			return False

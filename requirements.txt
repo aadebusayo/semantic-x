@@ -11,6 +11,7 @@ python-multipart>=0.0.6
 
 # LLM Integration
 openai>=1.75.0
+prometheus-client>=0.20.0
 
 # Vector Database (Open Source default)
 qdrant-client>=1.8.2
