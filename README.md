@@ -17,35 +17,46 @@ A universal, domain-agnostic AI agent orchestration framework that provides a so
 
 ```
 SemanticX/
-├── core/                 # Core framework components
-│   ├── orchestrator.py   # Workflow orchestration engine
-│   ├── base_agent.py     # Abstract agent base class
-│   ├── state.py          # Conversation state management
-│   ├── session_manager.py # Session lifecycle management
-│   └── tool_registry.py  # Dynamic tool loading system
-├── services/             # Core services
-│   ├── llm_service.py    # LLM integration interface
-│   ├── tool_handler.py   # Tool execution engine
-│   └── vector_store.py   # Vector database interface
-├── utils/                # Utility functions
-│   ├── error_handler.py  # Intelligent error handling
-│   ├── prompt_utils.py   # Prompt management utilities
-│   └── text_utils.py     # Text processing utilities
-├── agents/               # Agent implementations 
-│   ├── example/          # Example agent package
-│   │   ├── example_agent.py
-│   │   ├── prompt.txt    # Agent-specific prompt
-│   │   └── README.md
-│   ├── customer_service/ # Customer service agent package
-│   │   ├── customer_service_agent.py
-│   │   ├── prompt.txt
-│   │   └── README.md
-│   └── __init__.py       # Agent registry
-├── schemas/              # OpenAPI schema definitions
-├── config.py             # Configuration management
-├── main.py               # Application entry point
-├── tool_mapping.json     # Agent-tool mapping configuration
-└── requirements.txt      # Dependencies
+├── AGENT_DEVELOPMENT.md       # Agent development guide
+├── agents/                    # Agent implementations and registry
+│   ├── __init__.py            # Agent registry/CLI boilerplate
+│   └── example_agent.py       # Example agent
+├── api/
+│   └── router.py              # REST + WebSocket routes
+├── config.py                  # Configuration management
+├── core/                      # Core framework components
+│   ├── __init__.py
+│   ├── base_agent.py          # Universal agent base class
+│   ├── memory_manager.py      # Minimal memory manager hooks
+│   ├── orchestrator.py        # Workflow orchestration engine
+│   ├── session_manager.py     # Session lifecycle management
+│   └── tool_registry.py       # Dynamic tool loading system
+├── env.example                # Sample environment configuration
+├── FRAMEWORK_SUMMARY.md       # Implementation summary
+├── LICENSE                    # MIT license
+├── main.py                    # Application entry point (FastAPI)
+├── models/                    # Data models
+│   ├── __init__.py
+│   ├── schemas.py             # API message schemas
+│   └── state.py               # Conversation state model
+├── prompts/
+│   ├── __init__.py
+│   └── orchestrator/
+│       └── planner.txt        # Planner prompt template
+├── requirements.txt           # Dependencies
+├── schemas/                   # OpenAPI tool schemas
+│   └── Planner.json
+├── services/                  # Core services
+│   ├── __init__.py
+│   ├── http_tool_executor.py  # Generic HTTP executor for tools
+│   ├── llm_service.py         # LLM integration (stub)
+│   ├── tool_handler.py        # Tool execution engine
+│   └── vector_store.py        # Vector store (Qdrant + memory)
+├── tool_mapping.json          # Agent-tool mapping
+└── utils/                     # Utilities
+    ├── __init__.py
+    ├── error_handler.py       # Intelligent error handling
+    └── prompt_utils.py        # Prompt loading/injection
 ```
 
 ## 🎯 Quick Start
