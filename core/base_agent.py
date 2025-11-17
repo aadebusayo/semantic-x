@@ -7,12 +7,16 @@ import json
 import logging
 from abc import ABC, abstractmethod
 import asyncio
+from datetime import datetime, timezone
 
 from models.state import ConversationState
 from services.llm_service import LLMService
 from services.tool_handler import ToolHandler
 from utils.error_handler import IntelligentErrorHandler
 from utils.prompt_utils import PromptManager
+from core.orchestrator import Orchestrator
+from core.retry_manager import RetryManager
+from core.telemetry import record_event
 
 logger = logging.getLogger(__name__)
 
@@ -35,6 +39,7 @@ class BaseAgent(ABC):
         self.tool_handler = ToolHandler()
         self.error_handler = IntelligentErrorHandler()
         self.prompt_manager = PromptManager()
+        self.retry_manager = RetryManager()
         
         logger.info(f"🎯 {self.__class__.__name__} initialized for session: {session_id}")
 
@@ -182,6 +187,8 @@ class BaseAgent(ABC):
         state.current_step = None
         state.confirmation_pending = False
         state.auth_pending = False
+        state.auth_method = None
+        state.auth_context = {}
         state.is_task_complete = False
         
         # Clear any agent-specific metadata
@@ -189,6 +196,72 @@ class BaseAgent(ABC):
             state.agent_metadata = {}
         
         return state
+    def _set_model_override(self, state: ConversationState, tier: str):
+        """Persist a preferred model tier override onto the state."""
+        if not state.metadata:
+            state.metadata = {}
+        overrides = state.metadata.setdefault("routing_overrides", {})
+        overrides["model_tier"] = tier
+
+    def _get_model_override(self, state: ConversationState) -> Optional[str]:
+        """Return the model override chosen by the routing layer, if any."""
+        routing = getattr(state, "routing_metadata", None) or {}
+        return routing.get("model_name")
+
+    def _requires_plan(self, state: ConversationState) -> bool:
+        """Return True if the routing layer flagged this request as requiring a plan."""
+        routing = getattr(state, "routing_metadata", None) or {}
+        return bool(routing.get("requires_plan"))
+
+    async def _ensure_plan_if_needed(self, state: ConversationState) -> ConversationState:
+        """
+        Ensure a multi-step plan exists when the router flagged this request as complex.
+        """
+        self._invalidate_plan_if_context_changed(state)
+
+        if not self._requires_plan(state):
+            return state
+
+        if state.plan:
+            return state
+
+        orchestrator = Orchestrator(session_id=self.session_id, domain=self.domain)
+        plan = await orchestrator.create_plan(state)
+        if plan:
+            state.plan = plan
+            if not state.current_step and isinstance(plan, list) and plan:
+                first_step = plan[0]
+                state.current_step = str(first_step.get("step"))
+                state.current_agent = first_step.get("agent")
+                state.current_task = first_step.get("action")
+                state.auth_pending = bool(first_step.get("requires_auth"))
+                state.auth_method = first_step.get("auth_method")
+            state.plan_context = {
+                "intent": state.intent,
+                "sub_intent": state.sub_intent,
+                "generated_at": datetime.now(timezone.utc).isoformat()
+            }
+            record_event(state, "plan_created", {"step_count": len(plan), "agent": state.current_agent})
+            logger.info("Generated plan with %s steps for session %s", len(plan), self.session_id)
+        else:
+            logger.warning("Router requested a plan but orchestrator returned none for session %s", self.session_id)
+        return state
+
+    def _invalidate_plan_if_context_changed(self, state: ConversationState):
+        """Invalidate existing plan if intent/sub-intent changed since plan creation."""
+        if not state.plan:
+            return
+        plan_ctx = state.plan_context or {}
+        if plan_ctx.get("intent") != state.intent or plan_ctx.get("sub_intent") != state.sub_intent:
+            logger.info(
+                "Invalidating plan for session %s due to context change (old intent=%s/%s, new intent=%s/%s)",
+                self.session_id,
+                plan_ctx.get("intent"),
+                plan_ctx.get("sub_intent"),
+                state.intent,
+                state.sub_intent,
+            )
+            state.clear_plan(reason="intent_changed")
 
     def _prepare_messages(self, state: ConversationState, prompt_override: str = None) -> List[Dict[str, Any]]:
         """
@@ -238,12 +311,16 @@ class BaseAgent(ABC):
 
         messages = self._prepare_messages(state, prompt_override=prompt_override)
 
+        model_override = self._get_model_override(state)
+
         try:
             llm_response = await self.llm_service.generate_completion(
                 messages=messages,
                 tools=tools,
-                tool_choice="auto"
+                tool_choice="auto",
+                model_override=model_override,
             )
+            record_event(state, "llm_call", {"model": model_override or self.llm_service.model, "tools_used": bool(tools)})
 
             tool_calls = llm_response.get("tool_calls")
             if tool_calls:
@@ -276,7 +353,11 @@ class BaseAgent(ABC):
         messages = self._prepare_messages(state, prompt_override=prompt_override)
 
         try:
-            llm_response = await self.llm_service.generate_completion(messages=messages)
+            llm_response = await self.llm_service.generate_completion(
+                messages=messages,
+                model_override=self._get_model_override(state),
+            )
+            record_event(state, "llm_call", {"model": self._get_model_override(state) or self.llm_service.model, "tools_used": False})
             content = llm_response.get("content", "I'm sorry, I didn't get a response.")
             state.add_assistant_message(content)
             return state
@@ -328,13 +409,31 @@ class BaseAgent(ABC):
                 if result.get("success", True):
                     tool_result_content = json.dumps(result)
                     state.is_task_complete = True  # Signal that the step is complete
+                    self.retry_manager.reset(state)
+                    record_event(state, "tool_success", {"tool": function_name})
                 else:
+                    retryable = result.get("retryable", True)
+                    record_event(state, "tool_failure", {"tool": function_name, "retryable": retryable})
                     tool_result_content = json.dumps({
                         "error": True,
                         "user_message": result.get("message", "An error occurred"),
                         "error_type": result.get("error_type", "tool_execution_error"),
-                        "retryable": result.get("retryable", True)
+                        "retryable": retryable
                     })
+                    decision = self.retry_manager.handle_failure(state, function_name, retryable)
+                    if decision.message == "auth_refresh_required":
+                        state.auth_pending = True
+                        state.auth_context["reason"] = "validation_failed"
+                        state.confirmation_pending = False
+                        record_event(state, "auth_retry_required", {"tool": function_name})
+                        logger.info("Auth refresh requested for session %s after tool failure", self.session_id)
+                        return state
+                    if decision.escalate_model and decision.new_model_tier:
+                        self._set_model_override(state, decision.new_model_tier)
+                        record_event(state, "model_escalated", {"new_tier": decision.new_model_tier})
+                        logger.info("Escalating model tier to %s due to repeated failures", decision.new_model_tier)
+                    if decision.message:
+                        state.metadata.setdefault("system_events", []).append(decision.message)
 
             except json.JSONDecodeError as e:
                 logger.error(f"BaseAgent Error: Failed to decode JSON for tool {function_name} arguments: {e}", exc_info=True)
@@ -367,7 +466,11 @@ class BaseAgent(ABC):
         # After executing tools, call the LLM again to get a natural language response
         try:
             messages_for_final_response = self._prepare_messages(state)
-            final_response = await self.llm_service.generate_completion(messages=messages_for_final_response)
+            final_response = await self.llm_service.generate_completion(
+                messages=messages_for_final_response,
+                model_override=self._get_model_override(state),
+            )
+            record_event(state, "llm_call", {"model": self._get_model_override(state) or self.llm_service.model, "tools_used": False})
             state.add_assistant_message(final_response.get("content", "Tool execution completed."))
             state.is_task_complete = True  # Signal that the step is complete
         except Exception as e:
@@ -437,7 +540,8 @@ class BaseAgent(ABC):
             
             response = await self.llm_service.generate_completion(
                 messages=[{"role": "user", "content": summary_prompt}],
-                max_tokens=200
+                max_tokens=200,
+                model_override=self._get_model_override(state),
             )
             
             return response.get("content", "Unable to generate summary.")

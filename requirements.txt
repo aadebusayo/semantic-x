@@ -20,6 +20,7 @@ qdrant-client>=1.8.2
 tenacity>=8.2.0
 emoji>=2.8.0
 python-dateutil>=2.8.0
+jsonschema>=4.19.0
 
 # Development and Testing
 pytest>=7.0.0

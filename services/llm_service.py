@@ -43,11 +43,20 @@ class LLMService:
 			self._client = None
 	
 	@retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=0.5, min=0.5, max=4), reraise=True)
-	async def _openai_chat(self, messages: List[Dict[str, str]], tools: Optional[List[Dict[str, Any]]], tool_choice: Optional[str], max_tokens: Optional[int], temperature: Optional[float]) -> Dict[str, Any]:
+	async def _openai_chat(
+		self,
+		messages: List[Dict[str, str]],
+		tools: Optional[List[Dict[str, Any]]],
+		tool_choice: Optional[str],
+		max_tokens: Optional[int],
+		temperature: Optional[float],
+		model_override: Optional[str] = None,
+	) -> Dict[str, Any]:
 		from openai import AsyncOpenAI
 		assert self._client is not None
+		model_name = model_override or self.model
 		response = await self._client.chat.completions.create(
-			model=self.model,
+			model=model_name,
 			messages=messages,
 			tools=tools,
 			tool_choice=tool_choice,
@@ -79,18 +88,27 @@ class LLMService:
 		tools: Optional[List[Dict[str, Any]]] = None,
 		tool_choice: Optional[str] = None,
 		max_tokens: Optional[int] = None,
-		temperature: Optional[float] = None
+		temperature: Optional[float] = None,
+		model_override: Optional[str] = None,
 	) -> Dict[str, Any]:
 		"""
 		Generate a completion from the LLM with retries and provider fallback.
 		"""
 		try:
 			if self.provider == "openai" and self._client is not None:
-				return await self._openai_chat(messages, tools, tool_choice, max_tokens, temperature)
+				return await self._openai_chat(
+					messages,
+					tools,
+					tool_choice,
+					max_tokens,
+					temperature,
+					model_override=model_override,
+				)
 			# Fallback mock
 			logger.info("Using mock LLM response (no provider configured)")
+			mock_model = model_override or self.model or "mock-model"
 			mock_response = {
-				"content": "This is a mock response. Configure OPENAI_API_KEY to enable real completions.",
+				"content": f"This is a mock response from {mock_model}. Configure OPENAI_API_KEY to enable real completions.",
 			}
 			if tools and tool_choice == "auto":
 				mock_response["tool_calls"] = [{

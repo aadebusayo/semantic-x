@@ -93,12 +93,14 @@ def validate_config() -> bool:
     # Tool and Schema Settings
     tool_schema_dir: str = Field(default="./schemas", description="Directory containing OpenAPI schemas")
     tool_defaults_file: str = Field(default="./tool_defaults.json", description="Tool defaults configuration file")
+    tool_schema_refresh_interval_seconds: int = Field(default=600, description="Interval for refreshing tool schemas (seconds)")
     
     # Prompt Settings
     prompt_dir: str = Field(default="./prompts", description="Directory containing prompt templates")
     
     # Session Settings
     session_timeout_minutes: int = Field(default=30, description="Session timeout in minutes")
+    session_plan_grace_minutes: int = Field(default=5, description="Additional grace period for sessions with active plans or auth requirements")
     max_conversation_history: int = Field(default=100, description="Maximum conversation history length")
     
     # Memory Settings
@@ -109,10 +111,14 @@ def validate_config() -> bool:
     # Error Handling Settings
     max_retry_attempts: int = Field(default=3, description="Maximum retry attempts for operations")
     retry_delay_seconds: float = Field(default=1.0, description="Base retry delay in seconds")
+    retry_escalate_attempts: int = Field(default=2, description="Number of failures before escalating model tier")
     
     # Logging Settings
     log_level: str = Field(default="INFO", description="Logging level")
     log_format: str = Field(default="%(asctime)s - %(name)s - %(levelname)s - %(message)s", description="Log format")
+    enable_observability: bool = Field(default=True, description="Enable routing/LLM/tool telemetry events")
+    sensitive_data_domains: List[str] = Field(default_factory=lambda: ["banking"], description="Domains that must stay on private infrastructure")
+    sensitive_tools: List[str] = Field(default_factory=list, description="Tool names that must use private models")
     
     # CORS Settings
     cors_origins: list = Field(default=["*"], description="CORS allowed origins")

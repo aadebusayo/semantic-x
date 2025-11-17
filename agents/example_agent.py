@@ -77,6 +77,9 @@ When users ask about specific topics, use these guidelines:
             # LLM-first, fallback to keyword
             state = await self.determine_intent_and_sub_intent(state, self._determine_sub_intent)
 
+        # Ensure routing requirements like planning are satisfied before handling sub-intent
+        state = await self._ensure_plan_if_needed(state)
+
         # Process based on the determined sub-intent
         if state.sub_intent == "framework_info":
             state = await self._handle_framework_info(state)

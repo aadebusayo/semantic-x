@@ -59,18 +59,10 @@ class SessionManager:
             )
             
             # Initialize session metadata
-            self._session_metadata[session_id] = {
-                "created_at": datetime.now(timezone.utc),
-                "last_activity": datetime.now(timezone.utc),
-                "access_count": 0,
-                "domain": domain,
-                "status": "active"
-            }
+            self._session_metadata[session_id] = self._build_metadata(domain)
         else:
             logger.info(f"Retrieving existing session state for session_id: {session_id}")
-            # Update access count and last activity
-            self._session_metadata[session_id]["access_count"] += 1
-            self._session_metadata[session_id]["last_activity"] = datetime.now(timezone.utc)
+            self._update_metadata(session_id, access_count_increment=1)
             
             # Log the current plan state for debugging
             current_state = self._sessions[session_id]
@@ -96,10 +88,7 @@ class SessionManager:
         # Update the state
         self._sessions[state.session_id] = state
         
-        # Update session metadata
-        if state.session_id in self._session_metadata:
-            self._session_metadata[state.session_id]["last_activity"] = datetime.now(timezone.utc)
-            self._session_metadata[state.session_id]["status"] = state.status
+        self._update_metadata(state.session_id, status=state.status, domain=state.domain)
         
         # Log plan information if available
         if state.plan:
@@ -145,6 +134,7 @@ class SessionManager:
             "intent": state.intent,
             "sub_intent": state.sub_intent,
             "auth_status": state.auth_status,
+            "auth_pending": state.auth_pending,
             "status": state.status,
             "created_at": metadata.get("created_at"),
             "last_activity": metadata.get("last_activity"),
@@ -152,6 +142,8 @@ class SessionManager:
             "message_count": len(state.conversation_history),
             "has_plan": bool(state.plan),
             "current_step": state.current_step,
+            "current_agent": state.current_agent,
+            "routing_metadata": state.routing_metadata,
             "is_task_complete": state.is_task_complete
         }
 
@@ -194,15 +186,21 @@ class SessionManager:
             return True
         
         metadata = self._session_metadata[session_id]
-        last_activity = metadata.get("last_activity")
-        
-        if not last_activity:
-            return True
+        last_activity = metadata.get("last_activity") or metadata.get("created_at") or datetime.now(timezone.utc)
         
         timeout_minutes = settings.session_timeout_minutes
         timeout_delta = timedelta(minutes=timeout_minutes)
+        elapsed = datetime.now(timezone.utc) - last_activity
+        if elapsed <= timeout_delta:
+            return False
         
-        return datetime.now(timezone.utc) - last_activity > timeout_delta
+        state = self._sessions.get(session_id)
+        if state and (state.plan or state.auth_pending):
+            grace = timedelta(minutes=getattr(settings, "session_plan_grace_minutes", 5))
+            if elapsed <= timeout_delta + grace:
+                logger.debug("Session %s granted grace due to active plan/auth", session_id)
+                return False
+        return True
 
     def cleanup_expired_sessions(self) -> int:
         """
@@ -283,12 +281,7 @@ class SessionManager:
         Returns:
             bool: True if session was extended, False if not found
         """
-        if session_id not in self._session_metadata:
-            return False
-        
-        self._session_metadata[session_id]["last_activity"] = datetime.now(timezone.utc)
-        logger.debug(f"Extended session timeout for session_id: {session_id}")
-        return True
+        return self._update_metadata(session_id, touch_only=True)
 
     def set_session_domain(self, session_id: str, domain: str) -> bool:
         """
@@ -305,10 +298,34 @@ class SessionManager:
             return False
         
         self._sessions[session_id].domain = domain
-        if session_id in self._session_metadata:
-            self._session_metadata[session_id]["domain"] = domain
+        self._update_metadata(session_id, domain=domain)
         
         logger.info(f"Set domain '{domain}' for session_id: {session_id}")
+        return True
+
+    def _build_metadata(self, domain: Optional[str]) -> Dict:
+        now = datetime.now(timezone.utc)
+        return {
+            "created_at": now,
+            "last_activity": now,
+            "access_count": 0,
+            "domain": domain,
+            "status": "active"
+        }
+
+    def _update_metadata(self, session_id: str, status: Optional[str] = None, domain: Optional[str] = None, access_count_increment: int = 0, touch_only: bool = False):
+        if session_id not in self._session_metadata:
+            self._session_metadata[session_id] = self._build_metadata(domain)
+            return True
+        metadata = self._session_metadata[session_id]
+        if access_count_increment:
+            metadata["access_count"] = metadata.get("access_count", 0) + access_count_increment
+        if status:
+            metadata["status"] = status
+        if domain:
+            metadata["domain"] = domain
+        if touch_only or status or domain or access_count_increment:
+            metadata["last_activity"] = datetime.now(timezone.utc)
         return True
 
     def get_domain_sessions(self, domain: str) -> List[str]:

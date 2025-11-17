@@ -1,10 +1,10 @@
 # SemanticX Framework - Implementation Summary
 
-## 🎯 What We've Built
+## What We've Built
 
 We have successfully extracted and refactored the universal, domain-agnostic components from the original banking AI system into **SemanticX**, a reusable AI agent orchestration framework.
 
-## 🏗️ Core Architecture
+## Core Architecture
 
 ### **1. Universal BaseAgent System**
 - **Location**: `core/base_agent.py`
@@ -46,6 +46,35 @@ We have successfully extracted and refactored the universal, domain-agnostic com
   - Parameter validation
   - Error handling
 
+### **4b. Interaction Router & Model Tiering**
+- **Location**: `core/interaction_router.py`
+- **Purpose**: Classify each user turn as simple vs. complex, select the appropriate agent + LLM tier, and determine whether planning is required.
+- **Key Features**:
+  - Hybrid hardening via `tool_defaults.json` (map intents/tools to complexity and preferred models)
+  - Automatic model override injection (e.g., smaller frontier variant vs. full frontier)
+  - Planning flag propagation (simple flows skip planning; complex flows trigger orchestrator)
+  - Structured `routing_metadata` persisted on `ConversationState` for downstream auditing
+  - Deterministic reasoning (classifier bases decisions on configured tool/function targets)
+
+### **4c. Agent Factory & Multi-Agent Execution**
+- **Location**: `core/agent_factory.py`, `api/router.py`, `models/state.py`
+- **Purpose**: Allow orchestrated plans to hand off between multiple specialized agents, each responsible for specific steps.
+- **Key Features**:
+  - `AgentFactory` registry dynamically instantiates agents by name (e.g., steps can call `"BankingAgent"`, `"SupportAgent"`, etc.)
+  - Router inspects the active plan step to select the correct agent automatically; fallback logic uses metadata/defaults
+  - `ConversationState` tracks `current_agent`, `current_step`, and offers `advance_plan()` to progress multi-step workflows
+  - API layer re-routes every user turn through the router, instantiates the selected agent, and advances the plan when steps complete
+  - Enables deterministic multi-action flows spanning multiple agents while keeping orchestration centralized
+
+### **4d. Retry & Escalation Controller**
+- **Location**: `core/retry_manager.py`, `core/base_agent.py`, `config.py`
+- **Purpose**: Provide deterministic retry limits, automatic model-tier escalation, and user-friendly failure tracking.
+- **Key Features**:
+  - Central `RetryManager` uses `settings.max_retry_attempts` / `retry_escalate_attempts` to decide when to stop retrying or escalate
+  - Tool failures automatically increment `state.retry_count`, capture system events, and can force the router to use fallback frontier models
+  - Successful tool executions reset retry counters, preventing unnecessary escalations
+  - Router reads `routing_overrides` to honor forced model tiers on subsequent turns
+
 ### **5. Session Management System**
 - **Location**: `core/session_manager.py`
 - **Purpose**: Conversation lifecycle and memory management
@@ -53,6 +82,7 @@ We have successfully extracted and refactored the universal, domain-agnostic com
   - Automatic session cleanup
   - Timeout handling
   - Session statistics
+  - Graceful plan/auth grace periods and routing metadata preservation
   - Domain-based organization
   - Background maintenance
 
@@ -66,7 +96,7 @@ We have successfully extracted and refactored the universal, domain-agnostic com
   - Validation and error checking
   - Extensible settings
 
-## 🚀 Key Benefits Achieved
+## Key Benefits Achieved
 
 ### **1. Domain Agnostic**
 - ✅ Works with any domain (banking, healthcare, e-commerce, etc.)
@@ -96,7 +126,7 @@ We have successfully extracted and refactored the universal, domain-agnostic com
 - ✅ Health checks and metrics
 - ✅ Session management and cleanup
 
-## 📁 File Structure Created
+## File Structure Created
 
 ```
 SemanticX/
@@ -128,9 +158,9 @@ SemanticX/
     └── __init__.py
 ```
 
-## 🔧 What's Ready to Use
+## What's Ready to Use
 
-### **✅ Fully Implemented**
+### **Fully Implemented**
 1. **BaseAgent Class** - Complete with all methods
 2. **Orchestrator Engine** - Full workflow management
 3. **State Management** - Complete conversation state
@@ -140,19 +170,19 @@ SemanticX/
 7. **Main Application** - FastAPI server with endpoints
 8. **Prompt System** - Template loading and management
 
-### **🔄 Partially Implemented**
+### **Partially Implemented**
 1. **Tool Handler** - Core structure ready, needs implementation
 2. **LLM Service** - Interface defined, needs implementation
 3. **Error Handler** - Structure ready, needs implementation
 4. **Prompt Utils** - Basic structure, needs implementation
 
-### **📋 To Be Implemented**
+### **To Be Implemented**
 1. **WebSocket Handler** - Real-time communication
 2. **Vector Store Service** - Memory and embedding storage
 3. **Memory Manager** - Conversation summarization
 4. **API Router** - WebSocket endpoint handling
 
-## 🎯 How to Use the Framework
+## How to Use the Framework
 
 ### **1. Create a New Agent**
 ```python
@@ -187,7 +217,7 @@ class MyCustomAgent(BaseAgent):
 - Configure domain-specific tools
 - The framework handles the rest
 
-## 🌟 Key Innovations
+## Key Innovations
 
 ### **1. Universal Agent Pattern**
 - Single base class for all agents
@@ -213,7 +243,7 @@ class MyCustomAgent(BaseAgent):
 - Intent and workflow tracking
 - Vector storage support
 
-## 🚀 Next Steps
+## Next Steps
 
 ### **Immediate (Complete Core)**
 1. Implement `ToolHandler` service
@@ -239,16 +269,16 @@ class MyCustomAgent(BaseAgent):
 3. Add plugin system
 4. Create deployment templates
 
-## 🎉 Success Metrics
+## Success Metrics
 
-### **✅ Achieved**
+### **Achieved**
 - **100% Domain Agnostic** - Works with any business domain
 - **90% Code Reduction** - Agents need minimal code
 - **100% Tool Automation** - No manual tool registration
 - **100% Configuration Flexibility** - Universal settings
 - **100% Error Handling** - Built-in intelligent error management
 
-### **🎯 Framework Goals Met**
+### **Framework Goals Met**
 - ✅ Universal and reusable
 - ✅ Minimal code requirements
 - ✅ Automatic tool integration
@@ -256,7 +286,7 @@ class MyCustomAgent(BaseAgent):
 - ✅ Production ready
 - ✅ Easy to extend
 
-## 🔮 Future Potential
+## Future Potential
 
 The SemanticX Framework provides a solid foundation for:
 
@@ -266,7 +296,7 @@ The SemanticX Framework provides a solid foundation for:
 4. **Research and Development** - Rapid AI system prototyping
 5. **Educational Platforms** - AI agent development learning
 
-## 📚 Documentation Status
+## Documentation Status
 
 - ✅ **README.md** - Complete framework overview
 - ✅ **FRAMEWORK_SUMMARY.md** - This implementation summary
@@ -277,10 +307,7 @@ The SemanticX Framework provides a solid foundation for:
 - 📋 **User Guide** - To be created
 - 📋 **Developer Guide** - To be created
 
-## 🎯 Conclusion
-
-We have successfully extracted and refactored the universal components from the original banking AI system into **SemanticX**, a powerful, domain-agnostic AI agent orchestration framework. 
-
+## Conclusion
 The framework is **production-ready** for core functionality and provides a **solid foundation** for building AI agents in any domain with minimal code. The architecture is **scalable**, **maintainable**, and **extensible**, making it ideal for both development and production use.
 
 **SemanticX represents a significant advancement in AI agent development**, providing the tools and patterns needed to build intelligent, conversational AI systems quickly and efficiently across any business domain.

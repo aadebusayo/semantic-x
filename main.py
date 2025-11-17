@@ -45,7 +45,7 @@ async def lifespan(app: FastAPI):
     """Application lifespan manager."""
     # Startup
     try:
-        logger.info("🚀 Starting SemanticX Framework...")
+        logger.info(" Starting SemanticX Framework...")
         
         # Soft-validate configuration (do not block startup)
         try:
@@ -59,34 +59,34 @@ async def lifespan(app: FastAPI):
         # Initialize tool registry (loads schemas at startup)
         registry = ToolRegistry()
         tools = registry.get_all_tools()
-        logger.info(f"✅ Loaded {len(tools)} tools for function calling")
+        logger.info(f" Loaded {len(tools)} tools for function calling")
         
         # Initialize prompt manager
         prompt_manager = PromptManager()
-        logger.info("✅ Prompt manager initialized")
+        logger.info(" Prompt manager initialized")
         
         # Initialize session manager
-        logger.info("✅ Session manager initialized")
+        logger.info(" Session manager initialized")
         
-        logger.info(f"🎯 SemanticX Framework ready on {settings.host}:{settings.port}")
+        logger.info(f" SemanticX Framework ready on {settings.host}:{settings.port}")
         
     except Exception as e:
-        logger.error(f"❌ Startup error: {str(e)}")
+        logger.error(f" Startup error: {str(e)}")
         raise
     
     yield
     
     # Shutdown
     try:
-        logger.info("🛑 Shutting down SemanticX Framework...")
+        logger.info(" Shutting down SemanticX Framework...")
         
         # Shutdown session manager
         session_manager.shutdown()
         
-        logger.info("✅ SemanticX Framework shutdown complete")
+        logger.info("SemanticX Framework shutdown complete")
         
     except Exception as e:
-        logger.error(f"❌ Shutdown error: {str(e)}")
+        logger.error(f" Shutdown error: {str(e)}")
 
 
 # Initialize FastAPI app

@@ -5,22 +5,40 @@ import json
 import logging
 
 from core.session_manager import session_manager
-from agents.example_agent import ExampleAgent
+from core.interaction_router import InteractionRouter
+from core.agent_factory import AgentFactory
+from core.telemetry import record_event
 from models.schemas import Request, Response
 from fastapi import APIRouter
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+interaction_router = InteractionRouter()
+
+
+def _advance_plan_if_needed(state):
+	if state.plan and state.is_task_complete:
+		state.advance_plan()
+
 @router.post("/chat", response_model=dict)
 async def chat(request: Request):
 	# Simple REST chat endpoint using ExampleAgent
 	session_id = request.session_id or str(uuid.uuid4())
 	state = session_manager.get_or_create_state(session_id=session_id, domain="general")
 	state.add_user_message(request.message)
-	agent = ExampleAgent(session_id=session_id)
+	
+	decision = interaction_router.route(state=state)
+	try:
+		agent = AgentFactory.create(decision.agent_name, session_id)
+	except ValueError as exc:
+		logger.error("Failed to instantiate agent: %s", exc)
+		raise
+
 	state = await agent.process(state)
+	_advance_plan_if_needed(state)
 	session_manager.save_state(state)
+	record_event(state, "request_completed", {"session_id": session_id})
 	assistant_messages = state.get_assistant_messages()
 	assistant_text = assistant_messages[-1] if assistant_messages else ""
 	return {
@@ -38,9 +56,8 @@ async def websocket_endpoint(websocket: WebSocket):
 	session_id = websocket.query_params.get("session_id") or str(uuid.uuid4())
 	logger.info(f"WebSocket connected: session_id={session_id}")
 	
-	# Prepare initial state and agent
+	# Prepare initial state
 	state = session_manager.get_or_create_state(session_id=session_id, domain="general")
-	agent = ExampleAgent(session_id=session_id)
 	
 	# Send ready message
 	await websocket.send_json({
@@ -69,9 +86,19 @@ async def websocket_endpoint(websocket: WebSocket):
 			
 			# Add user message to state
 			state.add_user_message(content)
+			decision = interaction_router.route(state=state)
+			
+			try:
+				agent = AgentFactory.create(decision.agent_name, session_id)
+			except ValueError as exc:
+				logger.error("Agent instantiation failed: %s", exc)
+				await websocket.send_json({"type": "error", "message": str(exc)})
+				continue
 			
 			# Process with agent
 			state = await agent.process(state)
+			_advance_plan_if_needed(state)
+			record_event(state, "request_completed", {"session_id": session_id})
 			
 			# Save state
 			session_manager.save_state(state)

@@ -8,6 +8,10 @@ import logging
 from typing import Dict, List, Any, Optional
 from pathlib import Path
 import yaml
+import asyncio
+from datetime import datetime
+
+from config import settings
 
 logger = logging.getLogger(__name__)
 
@@ -23,9 +27,11 @@ class ToolRegistry:
         self.tool_mapping_file = Path(tool_mapping_file)
         self.tools: Dict[str, Dict[str, Any]] = {}
         self.tool_http_meta: Dict[str, Dict[str, Any]] = {}
+        self.tool_parameter_schemas: Dict[str, Dict[str, Any]] = {}
         self.agent_tool_mapping: Dict[str, List[str]] = {}
         self._load_tools()
         self._load_agent_mapping()
+        self._start_refresh_task()
     
     def _load_tools(self):
         """Load all OpenAPI schemas and convert them to function tools."""
@@ -41,12 +47,18 @@ class ToolRegistry:
                 tool_name = schema_file.stem
                 tool_def, http_meta = self._convert_schema_to_tool(schema, tool_name)
                 self.tools[tool_name] = tool_def
+                if tool_def.get("type") == "function":
+                    params = tool_def.get("function", {}).get("parameters")
+                    if params:
+                        self.tool_parameter_schemas[tool_name] = params
                 if http_meta:
                     self.tool_http_meta[tool_name] = http_meta
                 logger.info(f"Loaded tool: {tool_name}")
                 
             except Exception as e:
                 logger.error(f"Failed to load schema {schema_file}: {e}")
+        
+        self._tool_version = datetime.utcnow().isoformat()
     
     def _convert_schema_to_tool(self, schema: Dict[str, Any], tool_name: str) -> tuple[Dict[str, Any], Optional[Dict[str, Any]]]:
         """Convert OpenAPI schema to OpenAI function tool format."""
@@ -203,6 +215,8 @@ class ToolRegistry:
     def reload_tools(self):
         """Reload tools from schema directory."""
         self.tools.clear()
+        self.tool_http_meta.clear()
+        self.tool_parameter_schemas.clear()
         self._load_tools()
         logger.info("Reloaded tools from schema directory")
     
@@ -211,10 +225,34 @@ class ToolRegistry:
         if not self.tools:
             return "No tools available"
         
-        summary = "Available tools:\n"
+        summary = f"Available tools (schema_version={self._tool_version}):\n"
         for tool_name, tool_def in self.tools.items():
             if tool_def.get('type') == 'function':
                 function = tool_def.get('function', {})
                 summary += f"- {tool_name}: {function.get('description', 'No description')}\n"
         
         return summary
+
+    def get_tool_parameter_schema(self, tool_name: str) -> Optional[Dict[str, Any]]:
+        """Return the JSON schema for tool parameters if available."""
+        return self.tool_parameter_schemas.get(tool_name)
+
+    def _start_refresh_task(self):
+        interval = getattr(settings, "tool_schema_refresh_interval_seconds", 0)
+        if interval <= 0:
+            return
+        try:
+            loop = asyncio.get_event_loop()
+            loop.create_task(self._refresh_periodically(interval))
+        except RuntimeError:
+            logger.warning("Event loop unavailable; tool refresh task not started")
+
+    async def _refresh_periodically(self, interval: int):
+        while True:
+            try:
+                await asyncio.sleep(interval)
+                self.reload_tools()
+                self._load_agent_mapping()
+                logger.info("Periodic tool refresh completed")
+            except Exception as exc:
+                logger.error("Error during tool refresh: %s", exc)

@@ -7,15 +7,15 @@
 
 A universal, domain-agnostic AI agent orchestration framework that provides a solid foundation for building intelligent conversational AI systems.
 
-## 🎯 Quick Links
+## Quick Links
 
-📚 **Documentation & Resources**
+**Documentation & Resources**
 - [AGENT_DEVELOPMENT.md](./AGENT_DEVELOPMENT.md) - How to create and customize agents
 - [CONTRIBUTING.md](./CONTRIBUTING.md) - Contributing guidelines and PR checklist
 - [ROADMAP.md](./ROADMAP.md) - Feature roadmap and release plan
 - [Interactive Demo Notebook](./notebooks/demo_agent.ipynb) - Run code examples in Jupyter
 
-## 🚀 Core Features
+## Core Features
 
 - **Universal Agent Architecture** - Pluggable agent system with minimal code requirements
 - **Intelligent Orchestration** - Multi-step planning and workflow management
@@ -26,7 +26,7 @@ A universal, domain-agnostic AI agent orchestration framework that provides a so
 - **Real-time Communication** - WebSocket-based real-time messaging
 - **Prompt Engineering** - Dynamic context injection and template management
 
-## 🏗️ Architecture Overview
+## Architecture Overview
 
 ```
 SemanticX/
@@ -72,7 +72,7 @@ SemanticX/
     └── prompt_utils.py        # Prompt loading/injection
 ```
 
-## 🎯 Quick Start
+## Quick Start
 
 ### 1. Install Dependencies
 ```bash
@@ -126,7 +126,7 @@ agents/my_custom/
 python main.py
 ```
 
-## 🔧 Configuration
+## Configuration
 
 The framework is highly configurable through environment variables and configuration files:
 
@@ -136,7 +136,7 @@ The framework is highly configurable through environment variables and configura
 - `AGENT_PROMPT_DIR` - Directory for agent-specific prompts
   - Optional Qdrant config: `QDRANT_URL`, `QDRANT_API_KEY`, `QDRANT_COLLECTION`
 
-## 🎨 Customization Points
+## Customization Points
 
 ### Agent System
 - Extend `BaseAgent` for custom agent behavior
@@ -158,7 +158,7 @@ The framework is highly configurable through environment variables and configura
 - Implement conversation summarization and embedding
 - Configure vector storage for semantic search
 
-## 🌟 Key Benefits
+## Key Benefits
 
 1. **Domain Agnostic** - Works with any domain (banking, healthcare, e-commerce, etc.)
 2. **Minimal Code** - Create new agents with just a few lines of code
@@ -168,11 +168,11 @@ The framework is highly configurable through environment variables and configura
 6. **Real-time Communication** - WebSocket-based real-time messaging
 7. **Extensible Design** - Easy to add new capabilities and integrations
 
-## 📚 Examples
+## Examples
 
 See the `agents/` directory for complete agent implementations and the `AGENT_DEVELOPMENT.md` guide for detailed development instructions.
 
-## 🤝 Contributing
+## Contributing
 
 Contributions are welcome! Please see our contributing guidelines for more details.
 

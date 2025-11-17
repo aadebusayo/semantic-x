@@ -25,6 +25,8 @@ class ToolHandler:
         except Exception:
             self._registry = None
         logger.info("ToolHandler initialized")
+        from ..core.schema_validator import SchemaValidator
+        self._schema_validator = SchemaValidator()
     
     def register_tool(self, name: str, func: callable, metadata: Dict[str, Any] = None):
         """Register a tool function."""
@@ -109,16 +111,19 @@ class ToolHandler:
         Returns:
             Tuple of (validated_args, error_message)
         """
-        if function_name not in self.registered_tools:
+        if function_name not in self.registered_tools and not (self._registry and self._registry.get_tool_parameter_schema(function_name)):
             return {}, f"Tool '{function_name}' not found"
         
-        # For now, basic validation - can be enhanced with schema validation
-        validated_args = {}
+        arguments = arguments or {}
+        schema = self._registry.get_tool_parameter_schema(function_name) if self._registry else None
+        if schema:
+            validated_args, error = self._schema_validator.validate(arguments, schema)
+            if error:
+                return {}, error
+            return validated_args, None
         
-        for key, value in arguments.items():
-            if value is not None:  # Skip None values
-                validated_args[key] = value
-        
+        # Fallback basic validation
+        validated_args = {k: v for k, v in arguments.items() if v is not None}
         return validated_args, None
     
     def get_tool_info(self, tool_name: str) -> Optional[Dict[str, Any]]:
