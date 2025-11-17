@@ -2,7 +2,7 @@
 Universal conversation state management for SemanticX Framework.
 This model tracks conversation context, intent, and workflow state.
 """
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ConfigDict
 from typing import Any, Dict, List, Optional
 import uuid
 from datetime import datetime, timezone
@@ -185,7 +185,6 @@ class ConversationState(BaseModel):
             "memory_tags": self.memory_tags,
         }
     
-    class Config:
-        json_encoders = {
-            datetime: lambda v: v.isoformat()
-        }
+    model_config = ConfigDict(
+        ser_json_timedelta='float'
+    )

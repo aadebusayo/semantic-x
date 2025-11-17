@@ -6,6 +6,9 @@ import os
 from typing import Optional, Dict, Any
 from pydantic_settings import BaseSettings
 from pydantic import Field
+import logging
+from typing import Dict, Any
+import os
 
 
 class SemanticXSettings(BaseSettings):
@@ -28,6 +31,35 @@ class SemanticXSettings(BaseSettings):
     openai_model: str = Field(default="gpt-4", description="OpenAI model to use")
     openai_temperature: float = Field(default=0.1, description="OpenAI temperature")
     openai_max_tokens: int = Field(default=1000, description="OpenAI max tokens")
+
+
+# Instantiate global settings for easy imports (used by main.py and services)
+settings = SemanticXSettings()
+
+
+def get_llm_config() -> Dict[str, Any]:
+    """Return a simple dict of LLM configuration values for service consumers.
+
+    This provides backward-compatible access for services expecting a `get_llm_config()` helper.
+    """
+    return {
+        "provider": getattr(settings, "llm_provider", "openai"),
+        "api_key": os.environ.get("OPENAI_API_KEY") or getattr(settings, "openai_api_key", None),
+        "base_url": getattr(settings, "openai_base_url", None),
+        "model": getattr(settings, "openai_model", None),
+        "temperature": getattr(settings, "openai_temperature", None),
+        "max_tokens": getattr(settings, "openai_max_tokens", None),
+    }
+
+
+def validate_config() -> bool:
+    """Basic validation hook used during startup.
+
+    Returns True when basic checks pass. This is intentionally lightweight.
+    """
+    if settings.llm_provider == "openai" and not (os.environ.get("OPENAI_API_KEY") or settings.openai_api_key):
+        logging.warning("OpenAI provider selected but no OPENAI_API_KEY is configured. LLM will run in mock mode.")
+    return True
     
     # Azure OpenAI Settings (alternative to OpenAI)
     azure_openai_api_key: Optional[str] = Field(default=None, description="Azure OpenAI API key")

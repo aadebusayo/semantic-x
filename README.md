@@ -1,6 +1,19 @@
 # SemanticX Framework
 
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![Python 3.9+](https://img.shields.io/badge/Python-3.9%2B-blue)](https://www.python.org/downloads/)
+[![Version: 0.1.0-alpha](https://img.shields.io/badge/Version-0.1.0--alpha-blue)](./ROADMAP.md)
+[![Code style: black](https://img.shields.io/badge/Code%20Style-Black-black)](https://github.com/psf/black)
+
 A universal, domain-agnostic AI agent orchestration framework that provides a solid foundation for building intelligent conversational AI systems.
+
+## 🎯 Quick Links
+
+📚 **Documentation & Resources**
+- [AGENT_DEVELOPMENT.md](./AGENT_DEVELOPMENT.md) - How to create and customize agents
+- [CONTRIBUTING.md](./CONTRIBUTING.md) - Contributing guidelines and PR checklist
+- [ROADMAP.md](./ROADMAP.md) - Feature roadmap and release plan
+- [Interactive Demo Notebook](./notebooks/demo_agent.ipynb) - Run code examples in Jupyter
 
 ## 🚀 Core Features
 
