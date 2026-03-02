@@ -1,0 +1,81 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Infosearch</title>
+  <link rel="stylesheet" href="/frontend/styles.css?v=3" />
+</head>
+<body>
+  <div class="layout">
+
+    <!-- ── Sidebar ────────────────────────────────── -->
+    <aside class="sidebar">
+      <div class="sidebar-head">
+        <button id="newChatBtn" class="new-chat-btn">&#43; New Chat</button>
+      </div>
+      <div class="sidebar-scroll">
+        <nav id="chatList"></nav>
+      </div>
+    </aside>
+
+    <!-- ── Main ──────────────────────────────────── -->
+    <div class="main">
+
+      <header class="topbar">
+        <span id="chatTitle" class="topbar-title">New chat</span>
+        <div class="topbar-actions">
+          <button id="renameBtn" class="topbar-btn" title="Rename" style="display:none">&#9998; Rename</button>
+          <button id="toggleCiteBtn" class="topbar-btn" title="Show citations" style="display:none">&#128196; <span id="citeCount">0</span> docs</button>
+        </div>
+      </header>
+
+      <div class="body-row">
+
+        <!-- Thread -->
+        <div class="thread" id="thread">
+          <div class="welcome" id="welcome">
+            <div class="welcome-icon">&#128269;</div>
+            <h2>Ask anything</h2>
+            <p>Search your documents or ask a general question.</p>
+          </div>
+        </div>
+
+        <!-- Citation panel (hidden until citations present) -->
+        <aside class="cite-panel" id="citePanel">
+          <div class="cite-panel-head">
+            <strong id="citePanelLabel">Documents Referenced</strong>
+            <button id="closeCiteBtn" class="icon-close">&#10005;</button>
+          </div>
+          <div class="cite-panel-body" id="citePanelBody"></div>
+        </aside>
+
+      </div>
+
+      <!-- Composer -->
+      <div class="composer-wrap">
+        <div class="composer">
+          <textarea id="input" placeholder="Ask a follow up…" rows="1"></textarea>
+          <button id="sendBtn" title="Send">&#9654;</button>
+        </div>
+        <p class="composer-hint">Enter to send &middot; Shift+Enter for new line</p>
+      </div>
+
+    </div>
+  </div>
+
+  <!-- Rename modal -->
+  <div class="modal-overlay" id="renameModal" style="display:none">
+    <div class="modal">
+      <h3>Rename chat</h3>
+      <input id="renameInput" type="text" placeholder="Chat title" maxlength="200" />
+      <div class="modal-actions">
+        <button id="renameSave" class="btn-primary">Save</button>
+        <button id="renameCancel" class="btn-ghost">Cancel</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="/frontend/app.js?v=3"></script>
+</body>
+</html>

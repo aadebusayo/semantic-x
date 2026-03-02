@@ -1,222 +1,122 @@
+"""Infosearch API configuration.
+
+This service is intentionally lean:
+- Query Azure AI Search (semantic + vector) for relevant document chunks
+- Return short, extractive summaries with citations metadata
+- Persist chat history and document quick-questions in Azure Cosmos DB
+
+No other external API calls are required.
 """
-Configuration management for SemanticX Framework.
-Provides universal configuration that can be extended for any domain.
-"""
-import os
-from typing import Optional, Dict, Any
-from pydantic_settings import BaseSettings
+
+from __future__ import annotations
+
+from functools import lru_cache
+from typing import List, Optional
+
 from pydantic import Field
-import logging
-from typing import Dict, Any
-import os
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
-class SemanticXSettings(BaseSettings):
-    """Universal configuration settings for SemanticX Framework."""
-    
-    # Application Settings
-    app_name: str = Field(default="SemanticX Framework", description="Application name")
-    app_version: str = Field(default="1.0.0", description="Application version")
-    debug: bool = Field(default=False, description="Debug mode")
-    
-    # Server Settings
-    host: str = Field(default="127.0.0.1", description="Server host")
-    port: int = Field(default=8000, description="Server port")
-    reload: bool = Field(default=True, description="Auto-reload on changes")
-    
-    # LLM Provider Settings
-    llm_provider: str = Field(default="openai", description="LLM provider (openai, azure, anthropic, etc.)")
-    openai_api_key: Optional[str] = Field(default=None, description="OpenAI API key")
-    openai_base_url: Optional[str] = Field(default=None, description="OpenAI base URL")
-    openai_model: str = Field(default="gpt-4", description="OpenAI model to use")
-    openai_temperature: float = Field(default=0.1, description="OpenAI temperature")
-    openai_max_tokens: int = Field(default=1000, description="OpenAI max tokens")
+class Settings(BaseSettings):
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        env_file_encoding="utf-8",
+        case_sensitive=False,
+    )
+
+    # App
+    app_name: str = Field(default="Infosearch API")
+    app_version: str = Field(default="0.1.0")
+    debug: bool = Field(default=False)
+
+    # Server
+    host: str = Field(default="127.0.0.1")
+    port: int = Field(default=8000)
+    reload: bool = Field(default=True)
+
+    cors_origins: List[str] = Field(default_factory=lambda: ["*"])
+    cors_credentials: bool = Field(default=True)
+
+    # Azure AI Search
+    azure_search_endpoint: Optional[str] = Field(default=None, description="https://<service>.search.windows.net")
+    azure_search_index: Optional[str] = Field(default=None)
+    azure_search_api_key: Optional[str] = Field(default=None)
+    azure_search_semantic_config: Optional[str] = Field(default=None)
+
+    search_content_field: str = Field(default="content")
+    search_vector_field: str = Field(default="contentVector")
+    search_vector_dimensions: int = Field(default=1536)
+    search_vector_profile_vectorizer: str = Field(default="default-aoai-vectorizer")
+    search_doc_id_field: str = Field(default="documentId")
+    search_doc_name_field: str = Field(default="documentName")
+
+    # Search indexing (chunk documents)
+    search_chunk_key_field: str = Field(default="id", description="Key field name in the chunk index")
+    search_chunk_index_field: str = Field(default="chunkIndex")
+    search_chunk_start_field: str = Field(default="chunkStart")
+    search_chunk_end_field: str = Field(default="chunkEnd")
+
+    # If your index supports filtering by doc id/name, set these to the filterable field names.
+    search_filter_doc_id_field: Optional[str] = Field(default=None)
+    search_filter_doc_name_field: Optional[str] = Field(default=None)
+
+    default_top_k: int = Field(default=5)
+    max_excerpt_chars: int = Field(default=280)
+    # Minimum @search.score for a citation to be included; 0.0 = no filter.
+    search_min_citation_score: float = Field(default=0.02)
+
+    # Azure OpenAI (chat generation)
+    azure_openai_endpoint: Optional[str] = Field(default=None)
+    azure_openai_api_key: Optional[str] = Field(default=None)
+    azure_openai_api_version: str = Field(default="2024-02-15-preview")
+    azure_openai_chat_deployment: Optional[str] = Field(default=None)
+    azure_openai_embedding_deployment: Optional[str] = Field(default=None)
+    azure_openai_embedding_model: str = Field(default="text-embedding-3-small")
+    azure_openai_temperature: float = Field(default=0.2, ge=0.0, le=2.0)
+    azure_openai_max_tokens: int = Field(default=4096, ge=32, le=16000)
+
+    # Streaming / SignalR
+    signalr_enabled: bool = Field(default=False)
+    signalr_endpoint: Optional[str] = Field(default=None)
+    signalr_access_token: Optional[str] = Field(default=None)
+    signalr_hub: str = Field(default="chat")
+    signalr_target: str = Field(default="chatStream")
+
+    # Cosmos DB
+    cosmos_endpoint: Optional[str] = Field(default=None)
+    cosmos_key: Optional[str] = Field(default=None)
+    cosmos_database: str = Field(default="infosearch")
+    cosmos_chat_container: str = Field(default="chats")
+    cosmos_suggestions_container: str = Field(default="document_suggestions")
+    cosmos_ingestion_container: str = Field(default="ingestion")
+    cosmos_entity_container: str = Field(default="Entity")
+
+    entity_root_basepath_id: str = Field(default="0000-0000-0000-0000")
+    entity_file_object_type: int = Field(default=0)
+
+    # Azure Blob Storage (source documents)
+    azure_storage_connection_string: Optional[str] = Field(default=None)
+    azure_storage_container: Optional[str] = Field(default=None)
+    azure_storage_prefix: Optional[str] = Field(default=None, description="Optional blob name prefix")
+
+    enable_ingestion_worker: bool = Field(default=True)
+
+    ingestion_poll_seconds: int = Field(default=60, ge=5, le=3600)
+
+    # Indexing behavior
+    chunk_size_chars: int = Field(default=1200, ge=200, le=5000)
+    chunk_overlap_chars: int = Field(default=150, ge=0, le=1000)
+
+    # Azure Speech (Text-to-Speech)
+    azure_speech_key: Optional[str] = Field(default=None)
+    azure_speech_region: Optional[str] = Field(default=None)
+    azure_speech_voice: str = Field(default="en-US-AvaMultilingualNeural")
+
+    # Chat behavior
+    max_chat_messages: int = Field(default=60)
+    default_user_id: str = Field(default="anonymous")
 
 
-# Instantiate global settings for easy imports (used by main.py and services)
-settings = SemanticXSettings()
-
-
-def get_llm_config() -> Dict[str, Any]:
-    """Return a simple dict of LLM configuration values for service consumers.
-
-    This provides backward-compatible access for services expecting a `get_llm_config()` helper.
-    """
-    return {
-        "provider": getattr(settings, "llm_provider", "openai"),
-        "api_key": os.environ.get("OPENAI_API_KEY") or getattr(settings, "openai_api_key", None),
-        "base_url": getattr(settings, "openai_base_url", None),
-        "model": getattr(settings, "openai_model", None),
-        "temperature": getattr(settings, "openai_temperature", None),
-        "max_tokens": getattr(settings, "openai_max_tokens", None),
-    }
-
-
-def validate_config() -> bool:
-    """Basic validation hook used during startup.
-
-    Returns True when basic checks pass. This is intentionally lightweight.
-    """
-    if settings.llm_provider == "openai" and not (os.environ.get("OPENAI_API_KEY") or settings.openai_api_key):
-        logging.warning("OpenAI provider selected but no OPENAI_API_KEY is configured. LLM will run in mock mode.")
-    return True
-    
-    # Azure OpenAI Settings (alternative to OpenAI)
-    azure_openai_api_key: Optional[str] = Field(default=None, description="Azure OpenAI API key")
-    azure_openai_endpoint: Optional[str] = Field(default=None, description="Azure OpenAI endpoint")
-    azure_openai_deployment_name: Optional[str] = Field(default=None, description="Azure OpenAI deployment name")
-    azure_openai_api_version: str = Field(default="2024-02-15-preview", description="Azure OpenAI API version")
-    
-    # Vector Database Settings
-    vector_store_type: str = Field(default="memory", description="Vector store type (memory, pinecone, weaviate, chroma, qdrant)")
-    vector_store_url: Optional[str] = Field(default=None, description="Vector store URL")
-    vector_store_api_key: Optional[str] = Field(default=None, description="Vector store API key")
-    vector_store_dimension: int = Field(default=1536, description="Vector embedding dimension")
-    
-    # Pinecone Settings
-    pinecone_api_key: Optional[str] = Field(default=None, description="Pinecone API key")
-    pinecone_environment: Optional[str] = Field(default=None, description="Pinecone environment")
-    pinecone_index_name: Optional[str] = Field(default=None, description="Pinecone index name")
-    
-    # Weaviate Settings
-    weaviate_url: Optional[str] = Field(default=None, description="Weaviate URL")
-    weaviate_api_key: Optional[str] = Field(default=None, description="Weaviate API key")
-    
-    # Chroma Settings
-    chroma_persist_directory: str = Field(default="./chroma_db", description="Chroma persist directory")
-    
-    # Qdrant Settings
-    qdrant_url: Optional[str] = Field(default=None, description="Qdrant URL")
-    qdrant_api_key: Optional[str] = Field(default=None, description="Qdrant API key")
-    qdrant_collection: str = Field(default="semanticx", description="Qdrant collection name")
-    
-    # Tool and Schema Settings
-    tool_schema_dir: str = Field(default="./schemas", description="Directory containing OpenAPI schemas")
-    tool_defaults_file: str = Field(default="./tool_defaults.json", description="Tool defaults configuration file")
-    tool_schema_refresh_interval_seconds: int = Field(default=600, description="Interval for refreshing tool schemas (seconds)")
-    
-    # Prompt Settings
-    prompt_dir: str = Field(default="./prompts", description="Directory containing prompt templates")
-    
-    # Session Settings
-    session_timeout_minutes: int = Field(default=30, description="Session timeout in minutes")
-    session_plan_grace_minutes: int = Field(default=5, description="Additional grace period for sessions with active plans or auth requirements")
-    max_conversation_history: int = Field(default=100, description="Maximum conversation history length")
-    
-    # Memory Settings
-    enable_conversation_summarization: bool = Field(default=True, description="Enable conversation summarization")
-    enable_vector_storage: bool = Field(default=True, description="Enable vector storage for conversations")
-    memory_retention_days: int = Field(default=90, description="Memory retention period in days")
-    
-    # Error Handling Settings
-    max_retry_attempts: int = Field(default=3, description="Maximum retry attempts for operations")
-    retry_delay_seconds: float = Field(default=1.0, description="Base retry delay in seconds")
-    retry_escalate_attempts: int = Field(default=2, description="Number of failures before escalating model tier")
-    
-    # Logging Settings
-    log_level: str = Field(default="INFO", description="Logging level")
-    log_format: str = Field(default="%(asctime)s - %(name)s - %(levelname)s - %(message)s", description="Log format")
-    enable_observability: bool = Field(default=True, description="Enable routing/LLM/tool telemetry events")
-    sensitive_data_domains: List[str] = Field(default_factory=lambda: ["banking"], description="Domains that must stay on private infrastructure")
-    sensitive_tools: List[str] = Field(default_factory=list, description="Tool names that must use private models")
-    
-    # CORS Settings
-    cors_origins: list = Field(default=["*"], description="CORS allowed origins")
-    cors_credentials: bool = Field(default=True, description="CORS allow credentials")
-    
-    # Security Settings
-    enable_rate_limiting: bool = Field(default=True, description="Enable rate limiting")
-    rate_limit_requests: int = Field(default=100, description="Rate limit requests per minute")
-    rate_limit_window: int = Field(default=60, description="Rate limit window in seconds")
-    
-    class Config:
-        env_file = ".env"
-        env_file_encoding = "utf-8"
-        case_sensitive = False
-
-
-# Global settings instance
-settings = SemanticXSettings()
-
-
-def get_llm_config() -> Dict[str, Any]:
-    """Get LLM configuration based on provider."""
-    if settings.llm_provider.lower() == "azure":
-        return {
-            "provider": "azure",
-            "api_key": settings.azure_openai_api_key,
-            "endpoint": settings.azure_openai_endpoint,
-            "deployment_name": settings.azure_openai_deployment_name,
-            "api_version": settings.azure_openai_api_version,
-        }
-    else:  # Default to OpenAI
-        return {
-            "provider": "openai",
-            "api_key": settings.openai_api_key,
-            "base_url": settings.openai_base_url,
-            "model": settings.openai_model,
-            "temperature": settings.openai_temperature,
-            "max_tokens": settings.openai_max_tokens,
-        }
-
-
-def get_vector_store_config() -> Dict[str, Any]:
-    """Get vector store configuration based on type."""
-    config = {
-        "type": settings.vector_store_type,
-        "dimension": settings.vector_store_dimension,
-    }
-    
-    if settings.vector_store_type == "pinecone":
-        config.update({
-            "api_key": settings.pinecone_api_key,
-            "environment": settings.pinecone_environment,
-            "index_name": settings.pinecone_index_name,
-        })
-    elif settings.vector_store_type == "weaviate":
-        config.update({
-            "url": settings.weaviate_url,
-            "api_key": settings.weaviate_api_key,
-        })
-    elif settings.vector_store_type == "chroma":
-        config.update({
-            "persist_directory": settings.chroma_persist_directory,
-        })
-    elif settings.vector_store_type == "qdrant":
-        config.update({
-            "url": settings.qdrant_url,
-            "api_key": settings.qdrant_api_key,
-            "collection": settings.qdrant_collection,
-        })
-    
-    return config
-
-
-def validate_config() -> bool:
-    """Validate that required configuration is present."""
-    errors = []
-    
-    # Check LLM configuration
-    llm_config = get_llm_config()
-    if llm_config["provider"] == "openai" and not llm_config["api_key"]:
-        errors.append("OpenAI API key is required")
-    elif llm_config["provider"] == "azure" and not llm_config["api_key"]:
-        errors.append("Azure OpenAI API key is required")
-    
-    # Check vector store configuration
-    vector_config = get_vector_store_config()
-    if vector_config["type"] != "memory":
-        if vector_config["type"] == "pinecone" and not vector_config.get("api_key"):
-            errors.append("Pinecone API key is required")
-        elif vector_config["type"] == "weaviate" and not vector_config.get("url"):
-            errors.append("Weaviate URL is required")
-        elif vector_config["type"] == "qdrant" and not vector_config.get("url"):
-            errors.append("Qdrant URL is required")
-    
-    if errors:
-        print("Configuration validation errors:")
-        for error in errors:
-            print(f"  - {error}")
-        return False
-    
-    return True
+@lru_cache
+def get_settings() -> Settings:
+    return Settings()

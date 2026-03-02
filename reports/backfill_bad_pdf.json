@@ -1,0 +1,14 @@
+{
+  "summary": {
+    "count": 1
+  },
+  "items": [
+    {
+      "entityId": "9c1bca8d-626f-4669-871a-eddcc9c6bc22",
+      "blob": "9c1bca8d-626f-4669-871a-eddcc9c6bc22/074581251be524bf85af55f357bb7ac96b8fc245d123b3552391abc770abb817.pdf",
+      "name": "Test3",
+      "basePathId": "0000-0000-0000-0000",
+      "error": "Stream has ended unexpectedly"
+    }
+  ]
+}

@@ -1,103 +1,151 @@
+"""FastAPI entrypoint for Infosearch.
+
+REST-only backend that:
+- queries Azure AI Search (semantic + vector)
+- returns short summaries with citations
+- stores chat history + doc quick-questions in Cosmos DB
 """
-Main entry point for SemanticX Framework.
-Provides a universal AI agent orchestration service.
-"""
-import uvicorn
-from fastapi import FastAPI, HTTPException
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
-from prometheus_client import Counter, Histogram, generate_latest, CONTENT_TYPE_LATEST
-from dotenv import load_dotenv
+
+from __future__ import annotations
+
 import logging
 import sys
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
+from pathlib import Path
 
-from config import settings, validate_config
-from core.session_manager import session_manager
-from services.tool_handler import ToolHandler
-from core.tool_registry import ToolRegistry
-from utils.prompt_utils import PromptManager
-from api.router import router as websocket_router
+import uvicorn
+from dotenv import load_dotenv
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
+from fastapi.responses import JSONResponse
+from fastapi.staticfiles import StaticFiles
 
-# Load environment variables
+from api.router import router as api_router
+from config import get_settings
+from services.azure_ai_search import AzureAISearchService
+from services.blob_storage import BlobStorageSource
+from services.cosmos_repositories import CosmosChatRepository, CosmosIngestionRepository, CosmosSuggestionsRepository
+from services.ingestion_worker import IngestionWorker
+from services.llm_service import AzureOpenAILLMService
+from services.signalr_service import SignalRService
+from services.tts_service import AzureTTSService
+
+
 load_dotenv()
+settings = get_settings()
 
-# Configure logging
 logging.basicConfig(
-    level=getattr(logging, settings.log_level.upper()),
-    format=settings.log_format,
-    handlers=[logging.StreamHandler(sys.stdout)]
+    level=logging.INFO,
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    handlers=[logging.StreamHandler(sys.stdout)],
 )
 
-logger = logging.getLogger(__name__)
-# Basic metrics
-REQUEST_COUNT = Counter("semanticx_requests_total", "Total HTTP requests", ["endpoint", "method", "status"])
-REQUEST_LATENCY = Histogram("semanticx_request_latency_seconds", "Request latency", ["endpoint"]) 
+# Reduce Azure SDK HTTP noise (request/response dumps).
+for noisy_logger in (
+    "azure",
+    "azure.core.pipeline.policies.http_logging_policy",
+    "azure.cosmos._cosmos_http_logging_policy",
+    "azure.storage",
+):
+    logging.getLogger(noisy_logger).setLevel(logging.WARNING)
 
-# Suppress noisy logs
-logging.getLogger('uvicorn.access').setLevel(logging.WARNING)
-logging.getLogger('httpx').setLevel(logging.WARNING)
+# Reduce noisy runtime logs.
+logging.getLogger("watchfiles.main").setLevel(logging.WARNING)
+logging.getLogger("pypdf").setLevel(logging.ERROR)
+logging.getLogger("pypdf._reader").setLevel(logging.ERROR)
+
+logger = logging.getLogger(__name__)
+BASE_DIR = Path(__file__).resolve().parent
+FRONTEND_DIR = BASE_DIR / "frontend"
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Application lifespan manager."""
-    # Startup
-    try:
-        logger.info(" Starting SemanticX Framework...")
-        
-        # Soft-validate configuration (do not block startup)
+    """Create/close shared Azure clients."""
+    search_service = AzureAISearchService.from_settings(settings)
+    llm_service = AzureOpenAILLMService.from_settings(settings)
+    signalr_service = SignalRService.from_settings(settings)
+    tts_service = AzureTTSService.from_settings(settings)
+    chat_repo = CosmosChatRepository.from_settings(settings)
+    suggestions_repo = CosmosSuggestionsRepository.from_settings(settings)
+    ingestion_repo = CosmosIngestionRepository.from_settings(settings)
+
+    ingestion_worker = None
+
+    async def _safe_close(name: str, closer):
         try:
-            validate_config()
-        except Exception as _:
-            logger.warning("Configuration validation reported issues, continuing with defaults for dev mode.")
-        
-        # Initialize core services
-        logger.info("🔧 Initializing core services...")
-        
-        # Initialize tool registry (loads schemas at startup)
-        registry = ToolRegistry()
-        tools = registry.get_all_tools()
-        logger.info(f" Loaded {len(tools)} tools for function calling")
-        
-        # Initialize prompt manager
-        prompt_manager = PromptManager()
-        logger.info(" Prompt manager initialized")
-        
-        # Initialize session manager
-        logger.info(" Session manager initialized")
-        
-        logger.info(f" SemanticX Framework ready on {settings.host}:{settings.port}")
-        
-    except Exception as e:
-        logger.error(f" Startup error: {str(e)}")
-        raise
-    
-    yield
-    
-    # Shutdown
+            await closer()
+        except BaseException as exc:
+            logger.warning("Error closing %s: %s", name, exc)
+
+    app.state.search_service = search_service
+    app.state.llm_service = llm_service
+    app.state.signalr_service = signalr_service
+    app.state.tts_service = tts_service
+    app.state.chat_repo = chat_repo
+    app.state.suggestions_repo = suggestions_repo
+    app.state.ingestion_repo = ingestion_repo
+
     try:
-        logger.info(" Shutting down SemanticX Framework...")
-        
-        # Shutdown session manager
-        session_manager.shutdown()
-        
-        logger.info("SemanticX Framework shutdown complete")
-        
-    except Exception as e:
-        logger.error(f" Shutdown error: {str(e)}")
+        await llm_service.open()
+        await signalr_service.open()
+        await chat_repo.open()
+        await suggestions_repo.open()
+        await ingestion_repo.open()
+
+        # Optional: pull-based ingestion (no messaging/queue required)
+        if (
+            settings.enable_ingestion_worker
+            and settings.azure_storage_connection_string
+            and settings.azure_storage_container
+        ):
+            blob_source = BlobStorageSource(
+                connection_string=settings.azure_storage_connection_string,
+                container=settings.azure_storage_container,
+                prefix=settings.azure_storage_prefix,
+            )
+            ingestion_worker = IngestionWorker(
+                settings=settings,
+                blob_source=blob_source,
+                search_service=search_service,
+                ingestion_repo=ingestion_repo,
+                suggestions_repo=suggestions_repo,
+            )
+            try:
+                await ingestion_worker.open()
+                ingestion_worker.start()
+                app.state.ingestion_worker = ingestion_worker
+                logger.info("Ingestion worker started (poll=%ss)", settings.ingestion_poll_seconds)
+            except (ModuleNotFoundError, ImportError) as exc:
+                ingestion_worker = None
+                logger.warning("Ingestion worker disabled due to missing async transport dependency: %s", exc)
+
+        logger.info("Infosearch API started")
+        yield
+    finally:
+        if ingestion_worker is not None:
+            await _safe_close("ingestion worker stop", ingestion_worker.stop)
+            await _safe_close("ingestion worker", ingestion_worker.close)
+
+        await _safe_close("chat repository", chat_repo.close)
+        await _safe_close("suggestions repository", suggestions_repo.close)
+        await _safe_close("ingestion repository", ingestion_repo.close)
+        await _safe_close("llm service", llm_service.close)
+        await _safe_close("signalr service", signalr_service.close)
+        await _safe_close("search service", search_service.close)
+        logger.info("Infosearch API stopped")
 
 
-# Initialize FastAPI app
 app = FastAPI(
     title=settings.app_name,
-    description="Universal AI agent orchestration framework for building intelligent conversational AI systems",
     version=settings.app_version,
-    debug=settings.debug
+    description="Infosearch REST API",
+    debug=settings.debug,
+    lifespan=lifespan,
 )
 
-# CORS middleware
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_origins,
@@ -106,233 +154,59 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Set lifespan
-app.lifespan = lifespan
+if FRONTEND_DIR.exists():
+    app.mount("/frontend", StaticFiles(directory=str(FRONTEND_DIR)), name="frontend")
 
 
-# Root endpoint
 @app.get("/")
 async def root():
-    """Root endpoint with framework information."""
     return {
         "name": settings.app_name,
         "version": settings.app_version,
-        "description": "Universal AI agent orchestration framework",
         "status": "running",
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "docs": "/docs",
-        "health": "/health"
+        "health": "/health",
     }
-@app.get("/metrics")
-async def metrics():
-    content = generate_latest()
-    return JSONResponse(content=content, media_type=CONTENT_TYPE_LATEST)
 
 
-# Health check endpoint
+@app.get("/playground", include_in_schema=False)
+async def playground():
+    index = FRONTEND_DIR / "index.html"
+    if not index.exists():
+        return JSONResponse(status_code=404, content={"error": "frontend_not_found"})
+    return FileResponse(index)
+
+
 @app.get("/health")
-async def health_check():
-    """Health check endpoint."""
-    try:
-        # Check session manager
-        session_count = session_manager.get_session_count()
-        session_stats = session_manager.get_session_statistics()
-        
-        # Check tool handler
-        registry = ToolRegistry()
-        tools_count = len(registry.get_all_tools())
-        
-        return {
-            "status": "healthy",
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-            "version": settings.app_version,
-            "components": {
-                "session_manager": "healthy",
-                "tool_handler": "healthy",
-                "prompt_manager": "healthy"
-            },
-            "metrics": {
-                "active_sessions": session_count,
-                "total_tools": tools_count,
-                "uptime": "running"
-            },
-            "session_statistics": session_stats
-        }
-        
-    except Exception as e:
-        logger.error(f"Health check failed: {e}")
-        raise HTTPException(status_code=500, detail=f"Health check failed: {str(e)}")
+async def health():
+    return {
+        "status": "ok",
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+    }
 
 
-# Framework information endpoint
-@app.get("/info")
-async def framework_info():
-    """Get detailed framework information."""
-    try:
-        tool_handler = ToolHandler()
-        prompt_manager = PromptManager()
-        
-        return {
-            "framework": {
-                "name": settings.app_name,
-                "version": settings.app_version,
-                "description": "Universal AI agent orchestration framework"
-            },
-            "configuration": {
-                "llm_provider": settings.llm_provider,
-                "vector_store_type": settings.vector_store_type,
-                "domain": "universal",
-                "debug_mode": settings.debug
-            },
-            "capabilities": {
-                "agents": "pluggable_agent_system",
-                "orchestration": "multi_step_workflow_management",
-                "tools": "dynamic_api_integration",
-                "memory": "conversation_memory_and_vector_storage",
-                "error_handling": "intelligent_error_analysis",
-                "real_time": "websocket_communication"
-            },
-            "services": {
-                "tools_loaded": len(tool_handler.get_all_tools()),
-                "prompts_available": prompt_manager.get_available_prompts(),
-                "sessions_active": session_manager.get_session_count()
-            },
-            "timestamp": datetime.now(timezone.utc).isoformat()
-        }
-        
-    except Exception as e:
-        logger.error(f"Framework info failed: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to get framework info: {str(e)}")
-
-
-# Session management endpoints
-@app.get("/sessions")
-async def list_sessions():
-    """List all active sessions."""
-    try:
-        sessions = session_manager.list_active_sessions()
-        return {
-            "sessions": sessions,
-            "total_count": len(sessions),
-            "timestamp": datetime.now(timezone.utc).isoformat()
-        }
-    except Exception as e:
-        logger.error(f"Failed to list sessions: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to list sessions: {str(e)}")
-
-
-@app.get("/sessions/{session_id}")
-async def get_session_info(session_id: str):
-    """Get information about a specific session."""
-    try:
-        session_info = session_manager.get_session_info(session_id)
-        if not session_info:
-            raise HTTPException(status_code=404, detail="Session not found")
-        
-        return {
-            "session": session_info,
-            "timestamp": datetime.now(timezone.utc).isoformat()
-        }
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Failed to get session info: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to get session info: {str(e)}")
-
-
-@app.delete("/sessions/{session_id}")
-async def delete_session(session_id: str):
-    """Delete a specific session."""
-    try:
-        session_manager.clear_session(session_id)
-        return {
-            "message": f"Session {session_id} deleted successfully",
-            "timestamp": datetime.now(timezone.utc).isoformat()
-        }
-    except Exception as e:
-        logger.error(f"Failed to delete session: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to delete session: {str(e)}")
-
-
-# Tool management endpoints
-@app.get("/tools")
-async def list_tools():
-    """List all available tools."""
-    try:
-        registry = ToolRegistry()
-        tools = registry.get_all_tools()
-        
-        return {
-            "tools": tools,
-            "total_count": len(tools),
-            "timestamp": datetime.now(timezone.utc).isoformat()
-        }
-    except Exception as e:
-        logger.error(f"Failed to list tools: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to list tools: {str(e)}")
-
-
-@app.get("/tools/{agent_name}")
-async def get_tools_for_agent(agent_name: str):
-    """Get tools available for a specific agent."""
-    try:
-        tool_handler = ToolHandler()
-        tools = tool_handler.get_tools_for_agent(agent_name)
-        
-        return {
-            "agent": agent_name,
-            "tools": tools,
-            "tool_count": len(tools),
-            "timestamp": datetime.now(timezone.utc).isoformat()
-        }
-    except Exception as e:
-        logger.error(f"Failed to get tools for agent: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to get tools for agent: {str(e)}")
-
-
-# Prompt management endpoints
-@app.get("/prompts")
-async def list_prompts():
-    """List all available prompts."""
-    try:
-        prompt_manager = PromptManager()
-        prompts = prompt_manager.get_available_prompts()
-        
-        return {
-            "prompts": prompts,
-            "total_count": len(prompts),
-            "timestamp": datetime.now(timezone.utc).isoformat()
-        }
-    except Exception as e:
-        logger.error(f"Failed to list prompts: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to list prompts: {str(e)}")
-
-
-# Error handlers
 @app.exception_handler(Exception)
 async def global_exception_handler(request, exc):
-    """Global exception handler."""
-    logger.error(f"Unhandled exception: {exc}", exc_info=True)
+    logger.error("Unhandled exception: %s", exc, exc_info=True)
     return JSONResponse(
         status_code=500,
         content={
-            "error": "Internal server error",
+            "error": "internal_server_error",
             "message": "An unexpected error occurred",
-            "timestamp": datetime.now(timezone.utc).isoformat()
-        }
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        },
     )
 
 
-# Include API/WebSocket router
-app.include_router(websocket_router, prefix="/api/v1")
+app.include_router(api_router, prefix="/api/v1")
 
 
 if __name__ == "__main__":
-    logger.info(f"Starting SemanticX Framework on {settings.host}:{settings.port}")
     uvicorn.run(
         "main:app",
         host=settings.host,
         port=settings.port,
         reload=settings.reload,
-        log_level=settings.log_level.lower()
+        log_level="info",
     )

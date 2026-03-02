@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "semantic-x"
 version = "0.1.0"
-description = "A universal, domain-agnostic AI agent orchestration framework for building intelligent conversational AI systems"
+description = "Infosearch REST API: Azure AI Search semantic+vector retrieval, chat summaries with citations, and Cosmos DB history"
 readme = "README.md"
 license = {text = "MIT"}
 requires-python = ">=3.9"
@@ -13,12 +13,12 @@ authors = [
     {name = "SemanticX Contributors", email = "aadebusayo.adewunmi@gmail.com"}
 ]
 keywords = [
-    "ai",
-    "agents",
-    "llm",
-    "orchestration",
-    "conversational-ai",
-    "framework"
+    "azure-ai-search",
+    "cosmos-db",
+    "vector-search",
+    "semantic-search",
+    "chat",
+    "fastapi"
 ]
 classifiers = [
     "Development Status :: 3 - Alpha",
@@ -38,14 +38,12 @@ dependencies = [
     "python-dotenv>=1.0.0",
     "pydantic>=2.5.0",
     "pydantic-settings>=2.0.0",
-    "httpx>=0.25.0",
-    "python-multipart>=0.0.6",
-    "openai>=1.75.0",
-    "prometheus-client>=0.20.0",
-    "qdrant-client>=1.8.2",
+    "azure-search-documents[aio]>=11.5.0",
+    "azure-cosmos>=4.6.0",
+    "azure-storage-blob>=12.20.0",
+    "pypdf>=4.0.0",
     "tenacity>=8.2.0",
-    "emoji>=2.8.0",
-    "python-dateutil>=2.8.0"
+    "openai>=1.40.0"
 ]
 
 [project.optional-dependencies]
@@ -68,7 +66,7 @@ Repository = "https://github.com/aadebusayo/semantic-x.git"
 Issues = "https://github.com/aadebusayo/semantic-x/issues"
 
 [tool.setuptools]
-packages = ["core", "services", "models", "agents", "api", "prompts", "utils"]
+packages = ["api", "models", "services", "utils"]
 
 [tool.setuptools.package-data]
 prompts = ["**/*.txt", "**/*.json"]

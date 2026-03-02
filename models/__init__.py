@@ -1,15 +1,27 @@
-"""
-Models package for SemanticX Framework.
-Contains data models for conversation state, requests, and responses.
-"""
+"""Models package for Infosearch API."""
 
-from .state import ConversationState
-from .schemas import RequestType, ResponseType, Response, WebSocketMessage
+from .infosearch_api import (  # noqa: F401
+    Citation,
+    ChatHistoryItem,
+    ChatMessageRequest,
+    ChatMessageResponse,
+    ChatTranscript,
+    ChatTurn,
+    DocumentRef,
+    QuickQuestionsCreateRequest,
+    QuickQuestionsResponse,
+    RecentQuickQuestionsItem,
+)
 
 __all__ = [
-    "ConversationState",
-    "RequestType", 
-    "ResponseType",
-    "Response",
-    "WebSocketMessage"
+    "Citation",
+    "ChatHistoryItem",
+    "ChatMessageRequest",
+    "ChatMessageResponse",
+    "ChatTranscript",
+    "ChatTurn",
+    "DocumentRef",
+    "QuickQuestionsCreateRequest",
+    "QuickQuestionsResponse",
+    "RecentQuickQuestionsItem",
 ]

@@ -1,181 +1,179 @@
-# SemanticX Framework
+# Infosearch API
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Python 3.9+](https://img.shields.io/badge/Python-3.9%2B-blue)](https://www.python.org/downloads/)
-[![Version: 0.1.0-alpha](https://img.shields.io/badge/Version-0.1.0--alpha-blue)](./ROADMAP.md)
-[![Code style: black](https://img.shields.io/badge/Code%20Style-Black-black)](https://github.com/psf/black)
+Lean REST backend for your Infosearch project:
 
-A universal, domain-agnostic AI agent orchestration framework that provides a solid foundation for building intelligent conversational AI systems.
+- Queries Azure AI Search (semantic + vector) for relevant document chunks
+- Returns chat answers from Azure OpenAI grounded on retrieved citations metadata (doc name/id, rank, excerpt)
+- Stores chat history in Azure Cosmos DB (title + turns)
+- Generates and stores “quick action questions” per uploaded document (Cosmos DB)
+- Optional pull-based ingestion worker: polls Azure Blob Storage and upserts chunk docs into Azure AI Search
 
-## Quick Links
+## Quick start
 
-**Documentation & Resources**
-- [AGENT_DEVELOPMENT.md](./AGENT_DEVELOPMENT.md) - How to create and customize agents
-- [CONTRIBUTING.md](./CONTRIBUTING.md) - Contributing guidelines and PR checklist
-- [ROADMAP.md](./ROADMAP.md) - Feature roadmap and release plan
-- [Interactive Demo Notebook](./notebooks/demo_agent.ipynb) - Run code examples in Jupyter
+1) Install dependencies
 
-## Core Features
-
-- **Universal Agent Architecture** - Pluggable agent system with minimal code requirements
-- **Intelligent Orchestration** - Multi-step planning and workflow management
-- **Dynamic Tool Integration** - Automatic API schema parsing into function tools
-- **State Management** - Robust conversation state tracking with Pydantic validation
-- **Error Handling** - LLM-driven intelligent error analysis and recovery
-- **Session Management** - Conversation lifecycle and memory management
-- **Real-time Communication** - WebSocket-based real-time messaging
-- **Prompt Engineering** - Dynamic context injection and template management
-
-## Architecture Overview
-
-```
-SemanticX/
-├── AGENT_DEVELOPMENT.md       # Agent development guide
-├── agents/                    # Agent implementations and registry
-│   ├── __init__.py            # Agent registry/CLI boilerplate
-│   └── example_agent.py       # Example agent
-├── api/
-│   └── router.py              # REST + WebSocket routes
-├── config.py                  # Configuration management
-├── core/                      # Core framework components
-│   ├── __init__.py
-│   ├── base_agent.py          # Universal agent base class
-│   ├── memory_manager.py      # Minimal memory manager hooks
-│   ├── orchestrator.py        # Workflow orchestration engine
-│   ├── session_manager.py     # Session lifecycle management
-│   └── tool_registry.py       # Dynamic tool loading system
-├── env.example                # Sample environment configuration
-├── FRAMEWORK_SUMMARY.md       # Implementation summary
-├── LICENSE                    # MIT license
-├── main.py                    # Application entry point (FastAPI)
-├── models/                    # Data models
-│   ├── __init__.py
-│   ├── schemas.py             # API message schemas
-│   └── state.py               # Conversation state model
-├── prompts/
-│   ├── __init__.py
-│   └── orchestrator/
-│       └── planner.txt        # Planner prompt template
-├── requirements.txt           # Dependencies
-├── schemas/                   # OpenAPI tool schemas
-│   └── Planner.json
-├── services/                  # Core services
-│   ├── __init__.py
-│   ├── http_tool_executor.py  # Generic HTTP executor for tools
-│   ├── llm_service.py         # LLM integration (stub)
-│   ├── tool_handler.py        # Tool execution engine
-│   └── vector_store.py        # Vector store (Qdrant + memory)
-├── tool_mapping.json          # Agent-tool mapping
-└── utils/                     # Utilities
-    ├── __init__.py
-    ├── error_handler.py       # Intelligent error handling
-    └── prompt_utils.py        # Prompt loading/injection
-```
-
-## Quick Start
-
-### 1. Install Dependencies
 ```bash
 pip install -r requirements.txt
 ```
 
-### 2. Create Your First Agent
+2) Configure env
 
-The easiest way is using the built-in CLI command:
+- Copy `env.example` to `.env`
+- Fill in Azure AI Search + Azure OpenAI + Cosmos settings
+- Optional: enable Blob ingestion (see below)
 
-```bash
-# Create a basic agent
-python -m agents create CustomerService
+3) Run
 
-# Create with domain and description
-python -m agents create CustomerService customer_service "Handles customer inquiries"
-```
-
-Or manually create the agent structure:
-
-```python
-from semanticx.core.base_agent import BaseAgent
-from semanticx.models.state import ConversationState
-
-class MyCustomAgent(BaseAgent):
-    def load_prompt(self) -> str:
-        return "You are a helpful assistant specialized in..."
-    
-    def load_tools(self) -> List[Dict[str, Any]]:
-        return self.get_tools_for_agent("MyCustomAgent")
-    
-    async def process(self, state: ConversationState) -> ConversationState:
-        # Your agent logic here
-        return await self._call_llm_with_tools(state)
-```
-
-### 3. Agent Structure
-
-Each agent gets its own directory with all related files:
-
-```
-agents/my_custom/
-├── my_custom_agent.py    # Agent implementation
-├── prompt.txt            # Agent-specific prompt
-├── __init__.py           # Package initialization
-└── README.md             # Documentation
-```
-
-### 4. Run the Framework
 ```bash
 python main.py
 ```
 
-## Configuration
+## Create Azure AI Search index
 
-The framework is highly configurable through environment variables and configuration files:
+Use the Azure AI Search **index client** to create/update the index schema this app expects:
 
-- `LLM_PROVIDER` - Choose your LLM provider (OpenAI, Azure, etc.)
-- `VECTOR_STORE_TYPE` - Select vector database (memory, Qdrant)
-- `TOOL_SCHEMA_DIR` - Directory containing your API schemas
-- `AGENT_PROMPT_DIR` - Directory for agent-specific prompts
-  - Optional Qdrant config: `QDRANT_URL`, `QDRANT_API_KEY`, `QDRANT_COLLECTION`
+```bash
+python scripts/create_search_index.py
+```
 
-## Customization Points
+This uses `create_or_update_index` and your `.env` values (`AZURE_SEARCH_ENDPOINT`, `AZURE_SEARCH_API_KEY`, `AZURE_SEARCH_INDEX`, and field-name settings).
 
-### Agent System
-- Extend `BaseAgent` for custom agent behavior
-- Override `load_prompt()` and `load_tools()` methods
-- Implement custom `process()` logic
+For query-time `VectorizableTextQuery` support, set these as well before running the script:
 
-### Tool Integration
-- Place OpenAPI schemas in `schemas/` directory
-- Tools are automatically loaded and mapped to agents
-- Custom tool handlers can be registered
+- `AZURE_OPENAI_ENDPOINT`
+- `AZURE_OPENAI_API_KEY`
+- `AZURE_OPENAI_EMBEDDING_DEPLOYMENT`
+- Optional: `AZURE_OPENAI_EMBEDDING_MODEL` (default `text-embedding-3-small`)
 
-### Prompt System
-- Each agent has its own prompt file (`prompt.txt`)
-- Use `{{llm_state}}` and `{{tool_schema}}` for dynamic injection
-- Prompts are organized by agent in their respective directories
+## Create Azure AI Search indexer pipeline (chunk + embed)
 
-### Memory System
-- Extend memory classes for custom storage backends
-- Implement conversation summarization and embedding
-- Configure vector storage for semantic search
+To use Azure AI Search indexers (instead of only push-ingestion), run:
 
-## Key Benefits
+```bash
+python scripts/create_search_indexer.py
+```
 
-1. **Domain Agnostic** - Works with any domain (banking, healthcare, e-commerce, etc.)
-2. **Minimal Code** - Create new agents with just a few lines of code
-3. **Automatic Tool Loading** - API schemas automatically become available tools
-4. **Intelligent Error Handling** - LLM-driven error analysis and recovery
-5. **Scalable Architecture** - Built for production-scale deployments
-6. **Real-time Communication** - WebSocket-based real-time messaging
-7. **Extensible Design** - Easy to add new capabilities and integrations
+This provisions/updates:
 
-## Examples
+- Blob data source
+- Skillset (`SplitSkill` + `AzureOpenAIEmbeddingSkill`)
+- Indexer
 
-See the `agents/` directory for complete agent implementations and the `AGENT_DEVELOPMENT.md` guide for detailed development instructions.
+The script also ensures your index has vector profile + Azure OpenAI vectorizer wiring.
 
-## Contributing
+Required env for this script:
 
-Contributions are welcome! Please see our contributing guidelines for more details.
+- `AZURE_SEARCH_ENDPOINT`
+- `AZURE_SEARCH_API_KEY`
+- `AZURE_SEARCH_INDEX`
+- `AZURE_STORAGE_CONNECTION_STRING`
+- `AZURE_STORAGE_CONTAINER`
+- `AZURE_OPENAI_ENDPOINT`
+- `AZURE_OPENAI_API_KEY`
+- `AZURE_OPENAI_EMBEDDING_DEPLOYMENT`
 
-## 📄 License
+Optional env:
 
-This project is licensed under the MIT License - see the LICENSE file for details.
+- `AZURE_STORAGE_PREFIX`
+- `AZURE_SEARCH_DATASOURCE_NAME`
+- `AZURE_SEARCH_SKILLSET_NAME`
+- `AZURE_SEARCH_INDEXER_NAME`
+- `AZURE_SEARCH_RUN_INDEXER_NOW=true` (to trigger an immediate run)
+
+## Blob ingestion worker (optional)
+
+This repo includes a simple pull-based ingestion worker (no queues/messaging):
+
+- Polls a Blob container periodically
+- Detects new/changed blobs via ETag
+- Extracts text (supports `.txt`, `.md`, `.csv`, `.pdf`)
+- Chunks text and upserts chunk documents into your Azure AI Search index
+- Generates + stores quick questions in Cosmos DB
+
+To enable it, set these in `.env`:
+
+- `AZURE_STORAGE_CONNECTION_STRING`
+- `AZURE_STORAGE_CONTAINER`
+- Optional: `AZURE_STORAGE_PREFIX`
+- Optional: `ENABLE_INGESTION_WORKER=true` (default)
+
+`AZURE_STORAGE_PREFIX` limits blob listing to names that start with that prefix (for example `folderA/`), so only that logical path is scanned.
+
+### Cosmos ingestion container
+
+Create a Cosmos container named by `COSMOS_INGESTION_CONTAINER` with partition key `/document_id`.
+
+### Cosmos partition keys used by this app
+
+- Chat container (`COSMOS_CHAT_CONTAINER`): `/id`
+- Suggestions container (`COSMOS_SUGGESTIONS_CONTAINER`): `/document_id`
+- Ingestion container (`COSMOS_INGESTION_CONTAINER`): `/document_id`
+
+### Azure AI Search index expectations
+
+Indexing upserts chunk documents containing:
+
+- Key field (default `id`)
+- `documentId`, `documentName`
+- `content`
+- `chunkIndex`, `chunkStart`, `chunkEnd`
+
+If your index uses different field names, configure them via the `SEARCH_*_FIELD` and `SEARCH_CHUNK_*_FIELD` settings in `.env`.
+
+## One-time backfill indexing script
+
+If you want a one-time index population (not continuously wired into the app), run:
+
+```bash
+python scripts/backfill_search_from_entity.py
+```
+
+The script:
+
+- Reads upload metadata from Cosmos container `COSMOS_ENTITY_CONTAINER` (default `Entity`)
+- Uses `BasePathId` rules to resolve blob path from IDs:
+    - `BasePathId == ENTITY_ROOT_BASEPATH_ID` (default `0000-0000-0000-0000`) means blob is at root: `<id>`
+    - Otherwise it builds nested path by following parent `BasePathId` chain: `<parentId>/<childId>/.../<id>`
+- Downloads each resolved blob from `AZURE_STORAGE_CONTAINER`
+- Extracts text, chunks it, and upserts chunk documents into Azure AI Search
+
+Set these env vars before running:
+
+- `COSMOS_ENTITY_CONTAINER` (default `Entity`)
+- `ENTITY_ROOT_BASEPATH_ID` (default `0000-0000-0000-0000`)
+- `ENTITY_FILE_OBJECT_TYPE` (default `0`, to index only object type 0)
+- `BACKFILL_LOG_LEVEL` (default `INFO`, set `DEBUG` for per-document detail)
+- `BACKFILL_LOG_EVERY` (default `50`, periodic progress interval)
+
+## API
+
+- `POST /api/v1/chat/messages`
+    - Body: `{ message, chat_id?, user_id?, document?: {id?, name?}, top_k? }`
+    - Returns: `{ chat_id, title, answer, citations[] }`
+
+- `GET /api/v1/chats?user_id=&limit=`
+    - Returns: list of chat history items
+
+- `GET /api/v1/chats/{chat_id}?user_id=`
+    - Returns: chat transcript (turns)
+
+- `POST /api/v1/documents/suggestions`
+    - Body: `{ document: {id?, name?}, text? }`
+    - Returns: `{ questions[] }`
+
+- `GET /api/v1/suggestions/recent?limit=`
+    - Returns: recent quick questions by recency
+
+## Local frontend playground
+
+After starting the API, open:
+
+- `http://127.0.0.1:8000/playground`
+
+The playground lets you test locally:
+
+- Send chat messages (`POST /api/v1/chat/messages`)
+- List chats (`GET /api/v1/chats`)
+- Load a chat transcript (`GET /api/v1/chats/{chat_id}`)
+- Create quick questions (`POST /api/v1/documents/suggestions`)
+- View recent quick questions (`GET /api/v1/suggestions/recent`)
