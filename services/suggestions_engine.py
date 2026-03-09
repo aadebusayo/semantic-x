@@ -14,11 +14,9 @@ def generate_quick_questions(*, document_name: Optional[str], text: Optional[str
         f"What dates, names, or numbers should I pay attention to in {name}?",
     ]
 
-    # If we have text, slightly bias toward extracting a topic noun phrase (very light).
-    if text:
-        snippet = " ".join(text.strip().split())[:120]
-        if snippet:
-            candidates.insert(0, f"Summarize this: {snippet}…")
+    # If we have text, add a summarization question at the front.
+    if text and text.strip():
+        candidates.insert(0, f"Summarize {name}")
 
     # Deduplicate while preserving order.
     out: List[str] = []

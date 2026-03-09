@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import inspect
 import logging
+import re
 from typing import AsyncIterator, List, Optional
 
 from openai import AsyncAzureOpenAI
@@ -87,7 +88,6 @@ class AzureOpenAILLMService:
     @staticmethod
     def _sanitize_citations(text: str, citation_count: int) -> str:
         """Strip [N] markers where N is out of range to remove hallucinated refs."""
-        import re
         if not citation_count:
             return re.sub(r'\[\d+\]', '', text).strip()
         def _replace(m: re.Match) -> str:
@@ -215,6 +215,64 @@ class AzureOpenAILLMService:
 
         words = [w for w in text.split() if w]
         return " ".join(words[:6])[:80] or " ".join(user_message.strip().split()[:6])[:80] or "New chat"
+
+    async def generate_suggestions(
+        self,
+        *,
+        document_name: Optional[str],
+        text: Optional[str],
+        limit: int = 3,
+    ) -> List[str]:
+        """Generate short, contextual question suggestions based on document content."""
+        if not self._configured() or self._client is None:
+            return []
+
+        name = (document_name or "this document").strip() or "this document"
+        snippet = (text or "")[:1500]  # Limit context size
+
+        if not snippet.strip():
+            return []
+
+        prompt = (
+            f"Based on this document excerpt, generate exactly {limit} short question prompts "
+            f"that a user might want to ask. Each should be a brief phrase (3-8 words), "
+            f"like topic suggestions or quick queries.\n\n"
+            f"Document: {name}\n"
+            f"Content:\n{snippet}\n\n"
+            f"Return ONLY the {limit} suggestions, one per line, no numbering, no quotes, no extra text."
+        )
+
+        try:
+            response = await self._client.chat.completions.create(
+                model=self._deployment,
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.7,
+                max_completion_tokens=200,
+            )
+
+            text_response = ""
+            if response.choices and response.choices[0].message:
+                text_response = (response.choices[0].message.content or "").strip()
+
+            if not text_response:
+                return []
+
+            # Parse lines and clean up
+            lines = [line.strip() for line in text_response.split("\n") if line.strip()]
+            # Remove any numbering prefixes like "1.", "1)", "-", etc.
+            cleaned = []
+            for line in lines[:limit]:
+                # Strip common prefixes
+                clean = re.sub(r'^[\d]+[.):\-]\s*', '', line)
+                clean = re.sub(r'^[-*]\s*', '', clean)
+                clean = clean.strip('"\'')
+                if clean:
+                    cleaned.append(clean)
+
+            return cleaned[:limit]
+        except Exception as e:
+            logger.warning("generate_suggestions failed: %s", e)
+            return []
 
     async def stream_answer(
         self,

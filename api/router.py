@@ -249,12 +249,23 @@ async def get_chat(
 async def create_document_suggestions(
 	payload: QuickQuestionsCreateRequest,
 	suggestions_repo: CosmosSuggestionsRepository = Depends(get_suggestions_repo),
+	llm_service: AzureOpenAILLMService = Depends(get_llm_service),
 ):
-	questions = generate_quick_questions(
+	# Try LLM-based suggestions first
+	questions = await llm_service.generate_suggestions(
 		document_name=payload.document.name or payload.document.id,
 		text=payload.text,
 		limit=3,
 	)
+
+	# Fallback to heuristic if LLM fails or returns empty
+	if not questions:
+		questions = generate_quick_questions(
+			document_name=payload.document.name or payload.document.id,
+			text=payload.text,
+			limit=3,
+		)
+
 	item = await suggestions_repo.upsert_questions(
 		document_id=payload.document.id,
 		document_name=payload.document.name,
