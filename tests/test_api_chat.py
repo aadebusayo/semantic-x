@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime, timezone
 import os
 
@@ -41,15 +42,19 @@ class DummySearch:
 
 
 class DummyLLM:
-    async def answer(self, *, question: str, citations):
+    async def answer(self, *, question: str, citations, history=None):
         return "Dummy LLM answer"
 
     async def generate_title(self, *, user_message: str):
         return "Dummy title"
 
-    async def stream_answer(self, *, question: str, citations):
+    async def stream_answer(self, *, question: str, citations, history=None):
         for token in ["Dummy", " ", "LLM", " ", "answer"]:
             yield token
+
+    async def generate_suggestions(self, *, document_name=None, text=None, limit=3):
+        base = document_name or "document"
+        return [f"Question {idx} about {base}" for idx in range(1, limit + 1)]
 
 
 class DummyChatRepo:
