@@ -73,6 +73,7 @@ async def lifespan(app: FastAPI):
     ingestion_repo = CosmosIngestionRepository.from_settings(settings)
 
     ingestion_worker = None
+    blob_source = None
 
     async def _safe_close(name: str, closer):
         try:
@@ -87,6 +88,7 @@ async def lifespan(app: FastAPI):
     app.state.chat_repo = chat_repo
     app.state.suggestions_repo = suggestions_repo
     app.state.ingestion_repo = ingestion_repo
+    app.state.blob_source = None
 
     try:
         await llm_service.open()
@@ -95,17 +97,20 @@ async def lifespan(app: FastAPI):
         await suggestions_repo.open()
         await ingestion_repo.open()
 
-        # Optional: pull-based ingestion (no messaging/queue required)
-        if (
-            settings.enable_ingestion_worker
-            and settings.azure_storage_connection_string
-            and settings.azure_storage_container
-        ):
+        if settings.azure_storage_connection_string and settings.azure_storage_container:
             blob_source = BlobStorageSource(
                 connection_string=settings.azure_storage_connection_string,
                 container=settings.azure_storage_container,
                 prefix=settings.azure_storage_prefix,
             )
+            await blob_source.open()
+            app.state.blob_source = blob_source
+
+        # Optional: pull-based ingestion (no messaging/queue required)
+        if (
+            settings.enable_ingestion_worker
+            and blob_source is not None
+        ):
             ingestion_worker = IngestionWorker(
                 settings=settings,
                 blob_source=blob_source,
@@ -128,6 +133,9 @@ async def lifespan(app: FastAPI):
         if ingestion_worker is not None:
             await _safe_close("ingestion worker stop", ingestion_worker.stop)
             await _safe_close("ingestion worker", ingestion_worker.close)
+
+        if blob_source is not None:
+            await _safe_close("blob source", blob_source.close)
 
         await _safe_close("chat repository", chat_repo.close)
         await _safe_close("suggestions repository", suggestions_repo.close)

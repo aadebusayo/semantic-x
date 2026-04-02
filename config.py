@@ -102,6 +102,8 @@ class Settings(BaseSettings):
     enable_ingestion_worker: bool = Field(default=True)
 
     ingestion_poll_seconds: int = Field(default=60, ge=5, le=3600)
+    ingestion_reconcile_deletions: bool = Field(default=True)
+    ingestion_reconcile_every_polls: int = Field(default=10, ge=1, le=1000)
 
     # Indexing behavior
     chunk_size_chars: int = Field(default=1200, ge=200, le=5000)

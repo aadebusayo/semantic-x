@@ -10,7 +10,7 @@ logger = logging.getLogger(__name__)
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import StreamingResponse
 
-from api.dependencies import get_chat_repo, get_llm_service, get_search_service, get_signalr_service, get_suggestions_repo, get_tts_service
+from api.dependencies import get_blob_source, get_chat_repo, get_llm_service, get_search_service, get_signalr_service, get_suggestions_repo, get_tts_service
 from config import get_settings
 from models.infosearch_api import (
 	ChatHistoryItem,
@@ -25,6 +25,7 @@ from models.infosearch_api import (
 	RenameChatRequest,
 )
 from services.azure_ai_search import AzureAISearchService
+from services.blob_storage import BlobStorageSource
 from services.chat_engine import make_title
 from services.cosmos_repositories import CosmosChatRepository, CosmosSuggestionsRepository
 from services.llm_service import AzureOpenAILLMService
@@ -282,10 +283,22 @@ async def create_document_suggestions(
 async def list_recent_suggestions(
 	limit: int = Query(default=3, ge=1, le=10),
 	suggestions_repo: CosmosSuggestionsRepository = Depends(get_suggestions_repo),
+	blob_source: BlobStorageSource | None = Depends(get_blob_source),
 ):
-	items = await suggestions_repo.list_recent(limit=limit)
+	items = await suggestions_repo.list_recent(limit=min(limit * 5, 50))
 	out: list[RecentQuickQuestionsItem] = []
 	for it in items:
+		document_id = it.get("documentId")
+		if blob_source is not None and document_id:
+			try:
+				if not await blob_source.exists(blob_name=document_id):
+					await suggestions_repo.delete_questions(
+						document_id=document_id,
+						document_name=it.get("documentName"),
+					)
+					continue
+			except Exception:
+				pass
 		out.append(
 			RecentQuickQuestionsItem(
 				document={"id": it.get("documentId"), "name": it.get("documentName")},
@@ -293,6 +306,8 @@ async def list_recent_suggestions(
 				created_at=datetime.fromisoformat(it.get("createdAt")),
 			)
 		)
+		if len(out) >= limit:
+			break
 	return out
 
 

@@ -54,3 +54,8 @@ class BlobStorageSource:
         client = container.get_blob_client(blob_name)
         stream = await client.download_blob()
         return await stream.readall()
+
+    async def exists(self, *, blob_name: str) -> bool:
+        container = self._container()
+        client = container.get_blob_client(blob_name)
+        return bool(await client.exists())

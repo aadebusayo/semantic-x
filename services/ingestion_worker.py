@@ -40,6 +40,7 @@ class IngestionWorker:
 
         self._task: Optional[asyncio.Task] = None
         self._stopping = asyncio.Event()
+        self._poll_count = 0
 
     async def open(self) -> None:
         await self._blob_source.open()
@@ -69,6 +70,15 @@ class IngestionWorker:
                 processed = await self.run_once(limit=500)
                 if processed:
                     logger.info("Ingestion processed %s blobs", processed)
+
+                self._poll_count += 1
+                if (
+                    self._settings.ingestion_reconcile_deletions
+                    and self._poll_count % self._settings.ingestion_reconcile_every_polls == 0
+                ):
+                    removed = await self.reconcile_deleted_documents()
+                    if removed:
+                        logger.info("Ingestion reconciled %s deleted blobs", removed)
             except Exception as e:
                 logger.error("Ingestion loop error: %s", e, exc_info=True)
 
@@ -164,3 +174,31 @@ class IngestionWorker:
                 )
 
         return count
+
+    async def reconcile_deleted_documents(self) -> int:
+        if not self._settings.azure_storage_connection_string or not self._settings.azure_storage_container:
+            return 0
+
+        active_blob_names = set()
+        async for blob in self._blob_source.list_blobs(limit=None):
+            if blob.name.endswith("/"):
+                continue
+            active_blob_names.add(blob.name)
+
+        tracked_documents = await self._ingestion_repo.list_documents()
+        stale_document_ids = []
+        for item in tracked_documents:
+            document_id = item.get("document_id")
+            if not document_id or item.get("source") != "blob":
+                continue
+            if document_id not in active_blob_names:
+                stale_document_ids.append(document_id)
+
+        removed = 0
+        for document_id in stale_document_ids:
+            await self._search.delete_document_chunks(document_id=document_id)
+            await self._suggestions_repo.delete_questions(document_id=document_id)
+            await self._ingestion_repo.delete(blob_name=document_id)
+            removed += 1
+
+        return removed

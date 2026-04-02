@@ -384,3 +384,20 @@ class AzureAISearchService:
             await client.delete_documents(
                 documents=[{self._chunk_key_field: key} for key in batch]
             )
+
+    async def delete_document_chunks(self, *, document_id: str) -> None:
+        client = self._get_client()
+        if client is None:
+            logger.warning("Azure AI Search is not configured; skipping document deletion")
+            return
+
+        existing_keys = await self._list_existing_chunk_keys(document_id=document_id)
+        if not existing_keys:
+            return
+
+        batch_size = 200
+        for i in range(0, len(existing_keys), batch_size):
+            batch = existing_keys[i : i + batch_size]
+            await client.delete_documents(
+                documents=[{self._chunk_key_field: key} for key in batch]
+            )

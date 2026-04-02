@@ -3,6 +3,7 @@ from __future__ import annotations
 from fastapi import Request
 
 from services.azure_ai_search import AzureAISearchService
+from services.blob_storage import BlobStorageSource
 from services.cosmos_repositories import CosmosChatRepository, CosmosSuggestionsRepository
 from services.llm_service import AzureOpenAILLMService
 from services.signalr_service import SignalRService
@@ -19,6 +20,10 @@ def get_chat_repo(request: Request) -> CosmosChatRepository:
 
 def get_suggestions_repo(request: Request) -> CosmosSuggestionsRepository:
     return request.app.state.suggestions_repo
+
+
+def get_blob_source(request: Request) -> BlobStorageSource | None:
+    return getattr(request.app.state, "blob_source", None)
 
 
 def get_llm_service(request: Request) -> AzureOpenAILLMService:

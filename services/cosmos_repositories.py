@@ -38,6 +38,12 @@ class _InMemoryContainer:
             raise KeyError("not found")
         return it
 
+    async def delete_item(self, item: str, partition_key: str) -> None:
+        it = self._items.get(item)
+        if not it or it.get(self._pk_field) != partition_key:
+            raise KeyError("not found")
+        del self._items[item]
+
     async def query_items(
         self,
         query: str,
@@ -316,6 +322,19 @@ class CosmosSuggestionsRepository(_CosmosBase):
             out.append(it)
         return out
 
+    async def delete_questions(self, *, document_id: Optional[str], document_name: Optional[str] = None) -> None:
+        key = self._doc_key(document_id, document_name)
+        if self._container is not None:
+            try:
+                await self._container.delete_item(item=key, partition_key=key)
+            except Exception:
+                return
+            return
+        try:
+            await self._mem.delete_item(item=key, partition_key=key)
+        except Exception:
+            return
+
 
 class CosmosIngestionRepository(_CosmosBase):
     """Tracks which blobs have been processed.
@@ -393,3 +412,31 @@ class CosmosIngestionRepository(_CosmosBase):
             await self._mem.upsert_item(item)
 
         return item
+
+    async def list_documents(self) -> List[Dict[str, Any]]:
+        if self._container is None:
+            items = await self._mem.query_items(
+                "SELECT * FROM c",
+                parameters=[],
+            )
+            return items
+
+        query = "SELECT c.document_id, c.source, c.status, c.updatedAt FROM c"
+        items_iter = self._container.query_items(query=query, parameters=[])
+        out: List[Dict[str, Any]] = []
+        async for it in items_iter:
+            out.append(it)
+        return out
+
+    async def delete(self, *, blob_name: str) -> None:
+        item_id = self._safe_id(blob_name)
+        if self._container is not None:
+            try:
+                await self._container.delete_item(item=item_id, partition_key=blob_name)
+            except Exception:
+                return
+            return
+        try:
+            await self._mem.delete_item(item=item_id, partition_key=blob_name)
+        except Exception:
+            return

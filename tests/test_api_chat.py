@@ -8,6 +8,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from api.dependencies import (
+    get_blob_source,
     get_chat_repo,
     get_llm_service,
     get_search_service,
@@ -99,6 +100,7 @@ class DummyChatRepo:
 class DummySuggestionsRepo:
     def __init__(self):
         self._items = []
+        self.deleted = []
 
     async def open(self):
         return None
@@ -119,6 +121,24 @@ class DummySuggestionsRepo:
     async def list_recent(self, *, limit: int):
         return self._items[:limit]
 
+    async def delete_questions(self, *, document_id=None, document_name=None):
+        self.deleted.append({"documentId": document_id, "documentName": document_name})
+        self._items = [
+            item for item in self._items
+            if not (item.get("documentId") == document_id and item.get("documentName") == document_name)
+        ]
+
+
+class DummyBlobSource:
+    def __init__(self):
+        self._existing = set()
+
+    def set_existing(self, *blob_names):
+        self._existing = set(blob_names)
+
+    async def exists(self, *, blob_name: str):
+        return blob_name in self._existing
+
 
 class DummySignalR:
     async def open(self):
@@ -136,6 +156,7 @@ def override_search_service():
     chat_repo = DummyChatRepo()
     suggestions_repo = DummySuggestionsRepo()
     signalr = DummySignalR()
+    blob_source = DummyBlobSource()
 
     def _override(_request=None):
         return DummySearch()
@@ -152,13 +173,23 @@ def override_search_service():
     def _override_signalr(_request=None):
         return signalr
 
+    def _override_blob_source(_request=None):
+        return blob_source
+
     app.dependency_overrides[get_search_service] = _override
     app.dependency_overrides[get_llm_service] = _override_llm
     app.dependency_overrides[get_chat_repo] = _override_chat_repo
     app.dependency_overrides[get_suggestions_repo] = _override_suggestions_repo
     app.dependency_overrides[get_signalr_service] = _override_signalr
+    app.dependency_overrides[get_blob_source] = _override_blob_source
+    app.state.blob_source = blob_source
+    app.state._test_blob_source = blob_source
+    app.state._test_suggestions_repo = suggestions_repo
     yield
     app.dependency_overrides.clear()
+    app.state.blob_source = None
+    app.state._test_blob_source = None
+    app.state._test_suggestions_repo = None
 
 
 def test_chat_roundtrip_and_history():
@@ -205,3 +236,20 @@ def test_document_suggestions_and_recent():
         assert recent.status_code == 200
         items = recent.json()
         assert len(items) >= 1
+
+
+def test_recent_suggestions_excludes_deleted_blob_documents():
+    with TestClient(app) as client:
+        suggestions_repo = app.state._test_suggestions_repo
+        blob_source = app.state._test_blob_source
+
+        blob_source.set_existing("live/doc.pdf")
+        asyncio.run(suggestions_repo.upsert_questions(document_id="stale/doc.pdf", document_name="stale.pdf", questions=["Old question"]))
+        asyncio.run(suggestions_repo.upsert_questions(document_id="live/doc.pdf", document_name="live.pdf", questions=["Live question"]))
+
+        recent = client.get("/api/v1/suggestions/recent", params={"limit": 3})
+        assert recent.status_code == 200
+        items = recent.json()
+        assert len(items) == 1
+        assert items[0]["document"]["id"] == "live/doc.pdf"
+        assert suggestions_repo.deleted == [{"documentId": "stale/doc.pdf", "documentName": "stale.pdf"}]

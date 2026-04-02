@@ -179,10 +179,10 @@ class _BlobSource:
     async def close(self):
         return None
 
-    async def list_blobs(self, *, limit: int):
+    async def list_blobs(self, *, limit: int | None):
         count = 0
         for blob in self._blobs:
-            if count >= limit:
+            if limit is not None and count >= limit:
                 break
             yield blob
             count += 1
@@ -194,6 +194,7 @@ class _BlobSource:
 class _SearchRecorder:
     def __init__(self):
         self.calls = []
+        self.deleted = []
 
     async def upsert_chunks(self, *, document_id: str, document_name: str, chunks):
         self.calls.append(
@@ -204,11 +205,16 @@ class _SearchRecorder:
             }
         )
 
+    async def delete_document_chunks(self, *, document_id: str):
+        self.deleted.append(document_id)
+
 
 class _IngestionRepo:
     def __init__(self, prior):
         self._prior = prior
         self.statuses = []
+        self.documents = [] if prior is None else [prior]
+        self.deleted = []
 
     async def get(self, *, blob_name: str):
         return self._prior
@@ -217,10 +223,17 @@ class _IngestionRepo:
         self.statuses.append(kwargs)
         return kwargs
 
+    async def list_documents(self):
+        return list(self.documents)
+
+    async def delete(self, *, blob_name: str):
+        self.deleted.append(blob_name)
+
 
 class _SuggestionsRepo:
     def __init__(self):
         self.calls = []
+        self.deleted = []
 
     async def upsert_questions(self, *, document_id=None, document_name=None, questions=None):
         self.calls.append(
@@ -232,6 +245,9 @@ class _SuggestionsRepo:
         )
         return self.calls[-1]
 
+    async def delete_questions(self, *, document_id=None, document_name=None):
+        self.deleted.append({"document_id": document_id, "document_name": document_name})
+
 
 class _Settings:
     azure_storage_connection_string = "UseDevelopmentStorage=true"
@@ -239,6 +255,8 @@ class _Settings:
     chunk_size_chars = 50
     chunk_overlap_chars = 10
     ingestion_poll_seconds = 60
+    ingestion_reconcile_deletions = True
+    ingestion_reconcile_every_polls = 10
 
 
 def test_ingestion_worker_reprocesses_changed_pdf(monkeypatch):
@@ -275,5 +293,40 @@ def test_ingestion_worker_reprocesses_changed_pdf(monkeypatch):
         assert search.calls[0]["document_name"] == "manual.pdf"
         assert ingestion_repo.statuses[-1]["status"] == "processed"
         assert ingestion_repo.statuses[-1]["etag"] == "new-etag"
+
+    asyncio.run(_run())
+
+
+def test_ingestion_worker_reconciles_deleted_documents():
+    async def _run():
+        live_blob = _BlobInfo(
+            name="folder/live.pdf",
+            etag="etag-live",
+            last_modified_iso="2026-03-26T12:00:00+00:00",
+            size=128,
+        )
+        blob_source = _BlobSource([live_blob], b"live-content")
+        search = _SearchRecorder()
+        ingestion_repo = _IngestionRepo(prior=None)
+        ingestion_repo.documents = [
+            {"document_id": "folder/live.pdf", "source": "blob", "status": "processed"},
+            {"document_id": "folder/deleted.pdf", "source": "blob", "status": "processed"},
+        ]
+        suggestions_repo = _SuggestionsRepo()
+
+        worker = IngestionWorker(
+            settings=_Settings(),
+            blob_source=blob_source,
+            search_service=search,
+            ingestion_repo=ingestion_repo,
+            suggestions_repo=suggestions_repo,
+        )
+
+        removed = await worker.reconcile_deleted_documents()
+
+        assert removed == 1
+        assert search.deleted == ["folder/deleted.pdf"]
+        assert suggestions_repo.deleted == [{"document_id": "folder/deleted.pdf", "document_name": None}]
+        assert ingestion_repo.deleted == ["folder/deleted.pdf"]
 
     asyncio.run(_run())
