@@ -91,11 +91,13 @@ class QuickQuestionsCreateRequest(BaseModel):
 
 class QuickQuestionsResponse(BaseModel):
     document: DocumentRef
+    title: str
     questions: List[str]
     created_at: datetime
 
 
 class RecentQuickQuestionsItem(BaseModel):
     document: DocumentRef
+    title: str
     questions: List[str]
     created_at: datetime

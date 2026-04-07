@@ -11,7 +11,7 @@ from services.blob_storage import BlobStorageSource
 from services.chunking import chunk_text
 from services.cosmos_repositories import CosmosIngestionRepository, CosmosSuggestionsRepository
 from services.document_catalog import DocumentCatalogService, strip_file_extension
-from services.suggestions_engine import generate_quick_questions
+from services.suggestions_engine import build_suggestion_title, generate_quick_questions
 from services.text_extraction import extract_text
 
 logger = logging.getLogger(__name__)
@@ -152,12 +152,22 @@ class IngestionWorker:
 
                 # Quick questions stored in Cosmos for recency prefill.
                 questions = generate_quick_questions(document_name=document_name, text=text[:5000], limit=3)
-                await self._suggestions_repo.upsert_questions(
-                    document_id=document_id,
-                    document_name=document_name,
-                    blob_name=blob.name,
-                    questions=questions,
-                )
+                suggestion_title = build_suggestion_title(document_name=document_name, text=text[:5000])
+                try:
+                    await self._suggestions_repo.upsert_questions(
+                        document_id=document_id,
+                        document_name=document_name,
+                        title=suggestion_title,
+                        blob_name=blob.name,
+                        questions=questions,
+                    )
+                except TypeError:
+                    await self._suggestions_repo.upsert_questions(
+                        document_id=document_id,
+                        document_name=document_name,
+                        blob_name=blob.name,
+                        questions=questions,
+                    )
 
                 await self._ingestion_repo.upsert_status(
                     document_id=document_id,

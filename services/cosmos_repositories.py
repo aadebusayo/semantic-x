@@ -262,6 +262,7 @@ class CosmosSuggestionsRepository(_CosmosBase):
             - documentKey
         - documentId (optional, canonical document id)
         - documentName (optional, display name)
+                - title (optional, short display label)
         - blobName (optional, storage locator)
       - questions: [str]
       - createdAt (ISO)
@@ -293,6 +294,7 @@ class CosmosSuggestionsRepository(_CosmosBase):
         *,
         document_id: Optional[str],
         document_name: Optional[str],
+        title: Optional[str],
         questions: List[str],
         blob_name: Optional[str] = None,
     ) -> Dict[str, Any]:
@@ -304,6 +306,7 @@ class CosmosSuggestionsRepository(_CosmosBase):
             "documentKey": key,
             "documentId": document_id,
             "documentName": document_name,
+            "title": title,
             "blobName": blob_name,
             "questions": questions,
             "createdAt": now.isoformat(),
@@ -325,7 +328,7 @@ class CosmosSuggestionsRepository(_CosmosBase):
             return items[:limit]
 
         query = (
-            "SELECT TOP @limit c.documentId, c.documentName, c.blobName, c.questions, c.createdAt "
+            "SELECT TOP @limit c.documentId, c.documentName, c.title, c.blobName, c.questions, c.createdAt "
             "FROM c ORDER BY c.createdAt DESC"
         )
         items_iter = self._container.query_items(

@@ -35,7 +35,7 @@ from services.cosmos_repositories import CosmosChatRepository, CosmosSuggestions
 from services.document_catalog import DocumentCatalogService
 from services.llm_service import AzureOpenAILLMService
 from services.signalr_service import SignalRService
-from services.suggestions_engine import generate_quick_questions
+from services.suggestions_engine import build_suggestion_title, generate_quick_questions
 from services.tts_service import AzureTTSService
 
 
@@ -304,13 +304,22 @@ async def create_document_suggestions(
 	document = await document_catalog.normalize_document_ref(payload.document)
 	blob_name = await document_catalog.resolve_blob_name(document)
 	document_label = document.name or document.id
-
-	# Try LLM-based suggestions first
-	questions = await llm_service.generate_suggestions(
+	title_fallback = build_suggestion_title(document_name=document_label, text=payload.text)
+	questions_task = llm_service.generate_suggestions(
 		document_name=document_label,
 		text=payload.text,
 		limit=3,
 	)
+	title_generator = getattr(llm_service, "generate_suggestion_title", None)
+	title_task = (
+		title_generator(document_name=document_label, text=payload.text)
+		if callable(title_generator)
+		else asyncio.sleep(0, result=title_fallback)
+	)
+	questions, title = await asyncio.gather(questions_task, title_task)
+
+	# Try LLM-based suggestions first
+	title = (title or title_fallback).strip() or title_fallback
 
 	# Fallback to heuristic if LLM fails or returns empty
 	if not questions:
@@ -320,14 +329,25 @@ async def create_document_suggestions(
 			limit=3,
 		)
 
-	item = await suggestions_repo.upsert_questions(
-		document_id=document.id,
-		document_name=document.name,
-		blob_name=blob_name,
-		questions=questions,
-	)
+	try:
+		item = await suggestions_repo.upsert_questions(
+			document_id=document.id,
+			document_name=document.name,
+			title=title,
+			blob_name=blob_name,
+			questions=questions,
+		)
+	except TypeError:
+		item = await suggestions_repo.upsert_questions(
+			document_id=document.id,
+			document_name=document.name,
+			blob_name=blob_name,
+			questions=questions,
+		)
+		item["title"] = title
 	return QuickQuestionsResponse(
 		document=document,
+		title=item.get("title") or title,
 		questions=item.get("questions") or questions,
 		created_at=datetime.fromisoformat(item["createdAt"]),
 	)
@@ -358,9 +378,13 @@ async def list_recent_suggestions(
 		document = await document_catalog.normalize_document_ref(
 			DocumentRef(id=it.get("documentId"), name=it.get("documentName"))
 		)
+		title = (it.get("title") or "").strip() or build_suggestion_title(
+			document_name=document.name or it.get("documentName") or it.get("documentId"),
+		)
 		out.append(
 			RecentQuickQuestionsItem(
 				document=document,
+				title=title,
 				questions=it.get("questions") or [],
 				created_at=datetime.fromisoformat(it.get("createdAt")),
 			)

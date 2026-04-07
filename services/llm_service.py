@@ -9,6 +9,7 @@ from openai import AsyncAzureOpenAI
 
 from config import Settings
 from models.infosearch_api import Citation
+from services.suggestions_engine import build_suggestion_title
 
 logger = logging.getLogger(__name__)
 
@@ -273,6 +274,43 @@ class AzureOpenAILLMService:
         except Exception as e:
             logger.warning("generate_suggestions failed: %s", e)
             return []
+
+    async def generate_suggestion_title(
+        self,
+        *,
+        document_name: Optional[str],
+        text: Optional[str],
+    ) -> str:
+        fallback = build_suggestion_title(document_name=document_name, text=text)
+        if not self._configured() or self._client is None:
+            return fallback
+
+        prompt = (
+            "Write a short, human-friendly document title in at most 5 words. "
+            "Use the content to infer the title. Avoid file extensions, ids, GUIDs, and verbs like summarize or explain. "
+            "Return the title only.\n\n"
+            f"Document name: {(document_name or '').strip() or 'Unknown document'}\n"
+            f"Content:\n{(text or '')[:1500]}"
+        )
+
+        try:
+            response = await self._client.chat.completions.create(
+                model=self._deployment,
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.3,
+                max_completion_tokens=60,
+            )
+
+            text_response = ""
+            if response.choices and response.choices[0].message:
+                text_response = (response.choices[0].message.content or "").strip()
+
+            words = [word for word in text_response.split() if word]
+            title = " ".join(words[:5])[:80].strip()
+            return title or fallback
+        except Exception as e:
+            logger.warning("generate_suggestion_title failed: %s", e)
+            return fallback
 
     async def stream_answer(
         self,
