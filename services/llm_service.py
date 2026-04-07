@@ -21,6 +21,11 @@ def _is_placeholder(value: Optional[str]) -> bool:
     return (not text) or ("<" in text and ">" in text)
 
 
+def _is_unsupported_temperature_error(exc: Exception) -> bool:
+    message = str(exc).lower()
+    return "temperature" in message and "unsupported value" in message
+
+
 class AzureOpenAILLMService:
     def __init__(
         self,
@@ -85,6 +90,18 @@ class AzureOpenAILLMService:
             if inspect.isawaitable(maybe_result):
                 await maybe_result
         self._client = None
+
+    async def _create_chat_completion(self, **kwargs):
+        assert self._client is not None
+        try:
+            return await self._client.chat.completions.create(**kwargs)
+        except Exception as exc:
+            if "temperature" not in kwargs or not _is_unsupported_temperature_error(exc):
+                raise
+            retry_kwargs = dict(kwargs)
+            retry_kwargs.pop("temperature", None)
+            logger.info("Retrying Azure OpenAI completion without temperature for deployment=%r", self._deployment)
+            return await self._client.chat.completions.create(**retry_kwargs)
 
     @staticmethod
     def _sanitize_citations(text: str, citation_count: int) -> str:
@@ -154,7 +171,7 @@ class AzureOpenAILLMService:
             len(messages), len(history or []), self._deployment,
         )
 
-        response = await self._client.chat.completions.create(
+        response = await self._create_chat_completion(
             model=self._deployment,
             messages=messages,
             temperature=self._temperature,
@@ -197,7 +214,7 @@ class AzureOpenAILLMService:
             f"Message: {user_message[:300]}"
         )
 
-        response = await self._client.chat.completions.create(
+        response = await self._create_chat_completion(
             model=self._deployment,
             messages=[{"role": "user", "content": prompt}],
             temperature=self._temperature,
@@ -244,7 +261,7 @@ class AzureOpenAILLMService:
         )
 
         try:
-            response = await self._client.chat.completions.create(
+            response = await self._create_chat_completion(
                 model=self._deployment,
                 messages=[{"role": "user", "content": prompt}],
                 temperature=0.7,
@@ -294,7 +311,7 @@ class AzureOpenAILLMService:
         )
 
         try:
-            response = await self._client.chat.completions.create(
+            response = await self._create_chat_completion(
                 model=self._deployment,
                 messages=[{"role": "user", "content": prompt}],
                 temperature=0.3,
@@ -351,7 +368,7 @@ class AzureOpenAILLMService:
                 messages.append({"role": role, "content": content})
         messages.append({"role": "user", "content": user_prompt})
 
-        stream = await self._client.chat.completions.create(
+        stream = await self._create_chat_completion(
             model=self._deployment,
             messages=messages,
             temperature=self._temperature,
