@@ -4,7 +4,8 @@ from fastapi import Request
 
 from services.azure_ai_search import AzureAISearchService
 from services.blob_storage import BlobStorageSource
-from services.cosmos_repositories import CosmosChatRepository, CosmosSuggestionsRepository
+from services.cosmos_repositories import CosmosChatRepository, CosmosEntityRepository, CosmosIngestionRepository, CosmosSuggestionsRepository
+from services.document_catalog import DocumentCatalogService
 from services.llm_service import AzureOpenAILLMService
 from services.signalr_service import SignalRService
 from services.tts_service import AzureTTSService
@@ -20,6 +21,14 @@ def get_chat_repo(request: Request) -> CosmosChatRepository:
 
 def get_suggestions_repo(request: Request) -> CosmosSuggestionsRepository:
     return request.app.state.suggestions_repo
+
+
+def get_entity_repo(request: Request) -> CosmosEntityRepository:
+    return request.app.state.entity_repo
+
+
+def get_document_catalog(request: Request) -> DocumentCatalogService:
+    return request.app.state.document_catalog
 
 
 def get_blob_source(request: Request) -> BlobStorageSource | None:

@@ -30,6 +30,20 @@
         </div>
       </header>
 
+      <section class="doc-toolbar">
+        <div class="doc-toolbar-copy">
+          <strong>Document scope</strong>
+          <span>Select an indexed document to send the stored blob id and filename together, or preview excerpts without creating a chat turn.</span>
+        </div>
+        <div class="doc-toolbar-controls">
+          <select id="docSelect">
+            <option value="">All documents</option>
+          </select>
+          <button id="previewDocBtn" class="topbar-btn" type="button" disabled>Preview excerpts</button>
+        </div>
+        <div id="selectedDocMeta" class="doc-toolbar-meta">No document selected.</div>
+      </section>
+
       <div class="body-row">
 
         <!-- Thread -->
@@ -44,7 +58,10 @@
         <!-- Citation panel (hidden until citations present) -->
         <aside class="cite-panel" id="citePanel">
           <div class="cite-panel-head">
-            <strong id="citePanelLabel">Documents Referenced</strong>
+            <div class="cite-panel-head-copy">
+              <strong id="citePanelLabel">Documents Referenced</strong>
+              <span id="citePanelMeta" class="cite-panel-meta">Assistant citations and document previews appear here.</span>
+            </div>
             <button id="closeCiteBtn" class="icon-close">&#10005;</button>
           </div>
           <div class="cite-panel-body" id="citePanelBody"></div>
@@ -55,10 +72,10 @@
       <!-- Composer -->
       <div class="composer-wrap">
         <div class="composer">
-          <textarea id="input" placeholder="Ask a follow up…" rows="1"></textarea>
+          <textarea id="input" placeholder="Ask a follow up, or leave this empty and use Preview excerpts…" rows="1"></textarea>
           <button id="sendBtn" title="Send">&#9654;</button>
         </div>
-        <p class="composer-hint">Enter to send &middot; Shift+Enter for new line</p>
+        <p class="composer-hint">Enter to send &middot; Shift+Enter for new line &middot; Empty input with a selected document opens excerpt preview</p>
       </div>
 
     </div>

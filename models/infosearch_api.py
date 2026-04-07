@@ -19,6 +19,13 @@ class DocumentRef(BaseModel):
     name: Optional[str] = None
 
 
+class IndexedDocument(BaseModel):
+    id: str
+    name: str
+    status: Optional[str] = None
+    updated_at: Optional[datetime] = None
+
+
 class Citation(BaseModel):
     document_name: Optional[str] = None
     document_id: Optional[str] = None
@@ -33,6 +40,17 @@ class ChatMessageRequest(BaseModel):
     user_id: Optional[str] = None
     document: Optional[DocumentRef] = None
     top_k: Optional[int] = Field(default=None, ge=1, le=20)
+
+
+class DocumentPreviewRequest(BaseModel):
+    document: DocumentRef
+    top_k: Optional[int] = Field(default=None, ge=1, le=20)
+
+
+class DocumentPreviewResponse(BaseModel):
+    document: DocumentRef
+    citations: List[Citation]
+    created_at: datetime
 
 
 class ChatMessageResponse(BaseModel):

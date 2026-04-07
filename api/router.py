@@ -2,7 +2,7 @@ import asyncio
 import json
 import logging
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 
 logger = logging.getLogger(__name__)
@@ -10,7 +10,7 @@ logger = logging.getLogger(__name__)
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import StreamingResponse
 
-from api.dependencies import get_blob_source, get_chat_repo, get_llm_service, get_search_service, get_signalr_service, get_suggestions_repo, get_tts_service
+from api.dependencies import get_blob_source, get_chat_repo, get_document_catalog, get_llm_service, get_search_service, get_signalr_service, get_suggestions_repo, get_tts_service
 from config import get_settings
 from models.infosearch_api import (
 	ChatHistoryItem,
@@ -18,6 +18,10 @@ from models.infosearch_api import (
 	ChatMessageResponse,
 	ChatTranscript,
 	ChatTurn,
+	DocumentRef,
+	DocumentPreviewRequest,
+	DocumentPreviewResponse,
+	IndexedDocument,
 	QuickQuestionsCreateRequest,
 	QuickQuestionsResponse,
 	ReactionRequest,
@@ -28,6 +32,7 @@ from services.azure_ai_search import AzureAISearchService
 from services.blob_storage import BlobStorageSource
 from services.chat_engine import make_title
 from services.cosmos_repositories import CosmosChatRepository, CosmosSuggestionsRepository
+from services.document_catalog import DocumentCatalogService
 from services.llm_service import AzureOpenAILLMService
 from services.signalr_service import SignalRService
 from services.suggestions_engine import generate_quick_questions
@@ -46,17 +51,24 @@ async def post_chat_message(
 	payload: ChatMessageRequest,
 	search_service: AzureAISearchService = Depends(get_search_service),
 	chat_repo: CosmosChatRepository = Depends(get_chat_repo),
+	document_catalog: DocumentCatalogService = Depends(get_document_catalog),
 	llm_service: AzureOpenAILLMService = Depends(get_llm_service),
 ):
+	message = payload.message.strip()
+	if not message:
+		raise HTTPException(status_code=400, detail="Use /api/v1/documents/preview for document-only requests")
+
 	settings = get_settings()
 	chat_id = payload.chat_id or str(uuid.uuid4())
 	user_id = payload.user_id or settings.default_user_id
 	top_k = payload.top_k or settings.default_top_k
+	document = await document_catalog.normalize_document_ref(payload.document) if payload.document else None
 
 	citations, existing = await asyncio.gather(
-		search_service.search(query=payload.message, document=payload.document, top_k=top_k),
+		search_service.search(query=message, document=document, top_k=top_k),
 		chat_repo.get_chat(chat_id=chat_id, user_id=user_id),
 	)
+	citations = await document_catalog.normalize_citations(citations=citations)
 
 	# Use existing title only if it is a real AI-generated one (not a placeholder / fallback).
 	existing_title = (existing or {}).get("title")
@@ -74,20 +86,20 @@ async def post_chat_message(
 		# Run title generation and answer in parallel to minimise latency.
 		if _is_placeholder_title:
 			title_result, answer = await asyncio.gather(
-				llm_service.generate_title(user_message=payload.message),
-				llm_service.answer(question=payload.message, citations=citations, history=history),
+				llm_service.generate_title(user_message=message),
+				llm_service.answer(question=message, citations=citations, history=history),
 				return_exceptions=True,
 			)
 			if isinstance(title_result, Exception):
 				logger.warning("Title generation failed, using fallback: %s", title_result)
-				title = make_title(payload.message)
+				title = make_title(message)
 			else:
 				title = title_result
 			if isinstance(answer, Exception):
 				raise answer
 		else:
 			title = existing_title
-			answer = await llm_service.answer(question=payload.message, citations=citations, history=history)
+			answer = await llm_service.answer(question=message, citations=citations, history=history)
 	except RuntimeError as exc:
 		raise HTTPException(status_code=503, detail=str(exc)) from exc
 
@@ -95,7 +107,7 @@ async def post_chat_message(
 		chat_id=chat_id,
 		user_id=user_id,
 		title=title,
-		user_message=payload.message,
+		user_message=message,
 		assistant_message=answer,
 	)
 
@@ -114,18 +126,25 @@ async def post_chat_message_stream(
 	payload: ChatMessageRequest,
 	search_service: AzureAISearchService = Depends(get_search_service),
 	chat_repo: CosmosChatRepository = Depends(get_chat_repo),
+	document_catalog: DocumentCatalogService = Depends(get_document_catalog),
 	llm_service: AzureOpenAILLMService = Depends(get_llm_service),
 	signalr_service: SignalRService = Depends(get_signalr_service),
 ):
+	message = payload.message.strip()
+	if not message:
+		raise HTTPException(status_code=400, detail="Use /api/v1/documents/preview for document-only requests")
+
 	settings = get_settings()
 	chat_id = payload.chat_id or str(uuid.uuid4())
 	user_id = payload.user_id or settings.default_user_id
 	top_k = payload.top_k or settings.default_top_k
+	document = await document_catalog.normalize_document_ref(payload.document) if payload.document else None
 
 	citations, existing = await asyncio.gather(
-		search_service.search(query=payload.message, document=payload.document, top_k=top_k),
+		search_service.search(query=message, document=document, top_k=top_k),
 		chat_repo.get_chat(chat_id=chat_id, user_id=user_id),
 	)
+	citations = await document_catalog.normalize_citations(citations=citations)
 	existing_title = (existing or {}).get("title")
 	_is_placeholder_title = not existing_title or existing_title.strip().lower() in {"new chat", ""}
 	title = None if _is_placeholder_title else existing_title
@@ -143,9 +162,9 @@ async def post_chat_message_stream(
 
 		if not title:
 			try:
-				title = await llm_service.generate_title(user_message=payload.message)
+				title = await llm_service.generate_title(user_message=message)
 			except Exception:
-				title = make_title(payload.message)
+				title = make_title(message)
 
 		meta_payload = {
 			"chat_id": chat_id,
@@ -156,7 +175,7 @@ async def post_chat_message_stream(
 		await signalr_service.publish(user_id=user_id, event="meta", payload=meta_payload)
 
 		try:
-			async for token in llm_service.stream_answer(question=payload.message, citations=citations, history=history):
+			async for token in llm_service.stream_answer(question=message, citations=citations, history=history):
 				answer_parts.append(token)
 				chunk_payload = {"chat_id": chat_id, "delta": token}
 				yield _sse("chunk", chunk_payload)
@@ -166,8 +185,8 @@ async def post_chat_message_stream(
 			stored = await chat_repo.append_turns(
 				chat_id=chat_id,
 				user_id=user_id,
-				title=title or make_title(payload.message),
-				user_message=payload.message,
+				title=title or make_title(message),
+				user_message=message,
 				assistant_message=answer,
 			)
 
@@ -188,6 +207,35 @@ async def post_chat_message_stream(
 			await signalr_service.publish(user_id=user_id, event="error", payload=error_payload)
 
 	return StreamingResponse(event_generator(), media_type="text/event-stream")
+
+
+@router.get("/documents", response_model=list[IndexedDocument])
+async def list_documents(
+	limit: int = Query(default=100, ge=1, le=500),
+	document_catalog: DocumentCatalogService = Depends(get_document_catalog),
+):
+	return await document_catalog.list_documents(limit=limit)
+
+
+@router.post("/documents/preview", response_model=DocumentPreviewResponse)
+async def preview_document(
+	payload: DocumentPreviewRequest,
+	search_service: AzureAISearchService = Depends(get_search_service),
+	document_catalog: DocumentCatalogService = Depends(get_document_catalog),
+):
+	document = await document_catalog.normalize_document_ref(payload.document)
+	if not document.id and not document.name:
+		raise HTTPException(status_code=400, detail="Document id or name is required")
+
+	settings = get_settings()
+	top_k = payload.top_k or settings.default_top_k
+	citations = await search_service.preview_document(document=document, top_k=top_k)
+	citations = await document_catalog.normalize_citations(citations=citations)
+	return DocumentPreviewResponse(
+		document=document,
+		citations=citations,
+		created_at=datetime.now(timezone.utc),
+	)
 
 
 @router.get("/chats", response_model=list[ChatHistoryItem])
@@ -250,11 +298,16 @@ async def get_chat(
 async def create_document_suggestions(
 	payload: QuickQuestionsCreateRequest,
 	suggestions_repo: CosmosSuggestionsRepository = Depends(get_suggestions_repo),
+	document_catalog: DocumentCatalogService = Depends(get_document_catalog),
 	llm_service: AzureOpenAILLMService = Depends(get_llm_service),
 ):
+	document = await document_catalog.normalize_document_ref(payload.document)
+	blob_name = await document_catalog.resolve_blob_name(document)
+	document_label = document.name or document.id
+
 	# Try LLM-based suggestions first
 	questions = await llm_service.generate_suggestions(
-		document_name=payload.document.name or payload.document.id,
+		document_name=document_label,
 		text=payload.text,
 		limit=3,
 	)
@@ -262,18 +315,19 @@ async def create_document_suggestions(
 	# Fallback to heuristic if LLM fails or returns empty
 	if not questions:
 		questions = generate_quick_questions(
-			document_name=payload.document.name or payload.document.id,
+			document_name=document_label,
 			text=payload.text,
 			limit=3,
 		)
 
 	item = await suggestions_repo.upsert_questions(
-		document_id=payload.document.id,
-		document_name=payload.document.name,
+		document_id=document.id,
+		document_name=document.name,
+		blob_name=blob_name,
 		questions=questions,
 	)
 	return QuickQuestionsResponse(
-		document=payload.document,
+		document=document,
 		questions=item.get("questions") or questions,
 		created_at=datetime.fromisoformat(item["createdAt"]),
 	)
@@ -283,25 +337,30 @@ async def create_document_suggestions(
 async def list_recent_suggestions(
 	limit: int = Query(default=3, ge=1, le=10),
 	suggestions_repo: CosmosSuggestionsRepository = Depends(get_suggestions_repo),
+	document_catalog: DocumentCatalogService = Depends(get_document_catalog),
 	blob_source: BlobStorageSource | None = Depends(get_blob_source),
 ):
 	items = await suggestions_repo.list_recent(limit=min(limit * 5, 50))
 	out: list[RecentQuickQuestionsItem] = []
 	for it in items:
-		document_id = it.get("documentId")
-		if blob_source is not None and document_id:
+		blob_name = it.get("blobName")
+		if blob_source is not None and blob_name:
 			try:
-				if not await blob_source.exists(blob_name=document_id):
+				if not await blob_source.exists(blob_name=blob_name):
 					await suggestions_repo.delete_questions(
-						document_id=document_id,
+						document_id=it.get("documentId"),
 						document_name=it.get("documentName"),
 					)
 					continue
 			except Exception:
 				pass
+
+		document = await document_catalog.normalize_document_ref(
+			DocumentRef(id=it.get("documentId"), name=it.get("documentName"))
+		)
 		out.append(
 			RecentQuickQuestionsItem(
-				document={"id": it.get("documentId"), "name": it.get("documentName")},
+				document=document,
 				questions=it.get("questions") or [],
 				created_at=datetime.fromisoformat(it.get("createdAt")),
 			)

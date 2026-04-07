@@ -6,11 +6,11 @@ import logging
 from typing import Optional
 
 from config import Settings
-from models.infosearch_api import DocumentRef
 from services.azure_ai_search import AzureAISearchService
 from services.blob_storage import BlobStorageSource
 from services.chunking import chunk_text
 from services.cosmos_repositories import CosmosIngestionRepository, CosmosSuggestionsRepository
+from services.document_catalog import DocumentCatalogService, strip_file_extension
 from services.suggestions_engine import generate_quick_questions
 from services.text_extraction import extract_text
 
@@ -31,12 +31,14 @@ class IngestionWorker:
         search_service: AzureAISearchService,
         ingestion_repo: CosmosIngestionRepository,
         suggestions_repo: CosmosSuggestionsRepository,
+        document_catalog: DocumentCatalogService,
     ):
         self._settings = settings
         self._blob_source = blob_source
         self._search = search_service
         self._ingestion_repo = ingestion_repo
         self._suggestions_repo = suggestions_repo
+        self._document_catalog = document_catalog
 
         self._task: Optional[asyncio.Task] = None
         self._stopping = asyncio.Event()
@@ -109,6 +111,8 @@ class IngestionWorker:
                 text = extract_text(blob_name=blob.name, content=content)
                 if not text:
                     await self._ingestion_repo.upsert_status(
+                        document_id=strip_file_extension(blob.name) or blob.name,
+                        document_name=blob.name.split("/")[-1],
                         blob_name=blob.name,
                         storage_container=self._settings.azure_storage_container,
                         etag=blob.etag,
@@ -124,9 +128,9 @@ class IngestionWorker:
                     overlap=self._settings.chunk_overlap_chars,
                 )
 
-                # Use blob name as stable document id for now.
-                document_id = blob.name
-                document_name = blob.name.split("/")[-1]
+                metadata = await self._document_catalog.resolve_metadata(raw_document_id=blob.name, blob_name=blob.name)
+                document_id = metadata.id or blob.name
+                document_name = metadata.name or blob.name.split("/")[-1]
 
                 chunk_docs = []
                 for ch in chunks:
@@ -151,20 +155,26 @@ class IngestionWorker:
                 await self._suggestions_repo.upsert_questions(
                     document_id=document_id,
                     document_name=document_name,
+                    blob_name=blob.name,
                     questions=questions,
                 )
 
                 await self._ingestion_repo.upsert_status(
+                    document_id=document_id,
+                    document_name=document_name,
                     blob_name=blob.name,
                     storage_container=self._settings.azure_storage_container,
                     etag=blob.etag,
                     last_modified_iso=blob.last_modified_iso,
                     status="processed",
                 )
+                self._document_catalog.invalidate()
 
                 count += 1
             except Exception as e:
                 await self._ingestion_repo.upsert_status(
+                    document_id=strip_file_extension(blob.name) or blob.name,
+                    document_name=blob.name.split("/")[-1],
                     blob_name=blob.name,
                     storage_container=self._settings.azure_storage_container or "",
                     etag=blob.etag,
@@ -186,19 +196,27 @@ class IngestionWorker:
             active_blob_names.add(blob.name)
 
         tracked_documents = await self._ingestion_repo.list_documents()
-        stale_document_ids = []
+        stale_documents = []
         for item in tracked_documents:
-            document_id = item.get("document_id")
-            if not document_id or item.get("source") != "blob":
+            blob_name = item.get("blobName") or item.get("blob_name") or item.get("document_id")
+            if not blob_name or item.get("source") != "blob":
                 continue
-            if document_id not in active_blob_names:
-                stale_document_ids.append(document_id)
+            if blob_name not in active_blob_names:
+                stale_documents.append(item)
 
         removed = 0
-        for document_id in stale_document_ids:
-            await self._search.delete_document_chunks(document_id=document_id)
-            await self._suggestions_repo.delete_questions(document_id=document_id)
-            await self._ingestion_repo.delete(blob_name=document_id)
+        for item in stale_documents:
+            blob_name = item.get("blobName") or item.get("blob_name") or item.get("document_id")
+            metadata = await self._document_catalog.resolve_metadata(
+                raw_document_id=item.get("documentId") or item.get("document_id"),
+                raw_document_name=item.get("documentName") or item.get("document_name"),
+                blob_name=blob_name,
+            )
+            canonical_id = metadata.id or item.get("documentId") or item.get("document_id") or blob_name
+            await self._search.delete_document_chunks(document_id=canonical_id)
+            await self._suggestions_repo.delete_questions(document_id=canonical_id, document_name=metadata.name)
+            await self._ingestion_repo.delete(blob_name=blob_name)
+            self._document_catalog.invalidate()
             removed += 1
 
         return removed

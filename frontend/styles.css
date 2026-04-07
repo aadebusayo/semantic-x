@@ -149,6 +149,54 @@ body {
 .topbar-btn:hover { background: var(--bg); color: var(--ai-fg); }
 .topbar-actions { display: flex; gap: 6px; }
 
+.doc-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 12px 18px;
+  background: #eef4ff;
+  border-bottom: 1px solid var(--border);
+}
+
+.doc-toolbar-copy {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  font-size: 0.8rem;
+  color: var(--muted);
+}
+
+.doc-toolbar-copy strong {
+  color: var(--ai-fg);
+  font-size: 0.82rem;
+}
+
+.doc-toolbar-controls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-left: auto;
+}
+
+.doc-toolbar select {
+  min-width: 220px;
+  max-width: 360px;
+  padding: 7px 10px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--surface);
+  color: var(--ai-fg);
+  font-size: 0.83rem;
+}
+
+.doc-toolbar-meta {
+  max-width: 340px;
+  font-size: 0.75rem;
+  color: var(--muted);
+  line-height: 1.45;
+}
+
 /* Body row: thread + optional cite panel */
 .body-row {
   flex: 1;
@@ -287,6 +335,19 @@ body {
   font-size: 0.85rem;
 }
 
+.cite-panel-head-copy {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.cite-panel-meta {
+  color: var(--muted);
+  font-size: 0.73rem;
+  line-height: 1.4;
+}
+
 .icon-close {
   background: transparent;
   border: none;
@@ -339,10 +400,21 @@ body {
   margin-bottom: 5px;
 }
 
+.cite-card-id {
+  font-size: 0.72rem;
+  color: var(--muted);
+  background: var(--bg);
+  border-radius: 6px;
+  padding: 5px 7px;
+  margin-bottom: 7px;
+  word-break: break-all;
+}
+
 .cite-card-excerpt {
   color: var(--muted);
   line-height: 1.45;
   display: -webkit-box;
+  line-clamp: 3;
   -webkit-line-clamp: 3;
   -webkit-box-orient: vertical;
   overflow: hidden;
@@ -464,3 +536,21 @@ body {
   color: var(--muted);
 }
 .btn-ghost:hover { background: var(--bg); }
+
+@media (max-width: 960px) {
+  .doc-toolbar {
+    flex-wrap: wrap;
+    align-items: flex-start;
+  }
+
+  .doc-toolbar-controls {
+    width: 100%;
+    margin-left: 0;
+  }
+
+  .doc-toolbar select,
+  .doc-toolbar-meta {
+    width: 100%;
+    max-width: 100%;
+  }
+}

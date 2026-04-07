@@ -98,11 +98,18 @@ class AzureAISearchService:
         if not document:
             return None
 
+        filters: List[str] = []
+
         if document.id and self._filter_doc_id_field:
-            return f"{self._filter_doc_id_field} eq '{_escape_odata_string(document.id)}'"
+            filters.append(f"{self._filter_doc_id_field} eq '{_escape_odata_string(document.id)}'")
 
         if document.name and self._filter_doc_name_field:
-            return f"{self._filter_doc_name_field} eq '{_escape_odata_string(document.name)}'"
+            filters.append(f"{self._filter_doc_name_field} eq '{_escape_odata_string(document.name)}'")
+
+        if filters:
+            if len(filters) == 1:
+                return filters[0]
+            return " or ".join(f"({filter_expr})" for filter_expr in filters)
 
         # No filterable field configured
         return None
@@ -332,6 +339,37 @@ class AzureAISearchService:
             return self._to_citations(plain_results)
         except Exception as e:
             logger.error("Search failed after vector fallback: %s", e, exc_info=True)
+            return []
+
+    async def preview_document(self, *, document: DocumentRef, top_k: int) -> List[Citation]:
+        client = self._get_client()
+        if client is None:
+            logger.warning("Azure AI Search is not configured; returning empty citations")
+            return []
+
+        filter_expr = self._build_filter(document)
+        try:
+            if filter_expr:
+                results = await self._search_results(
+                    client=client,
+                    query="*",
+                    top_k=top_k,
+                    filter_expr=filter_expr,
+                    allow_vector=False,
+                )
+                return self._to_citations(results)
+
+            results = await self._search_results(
+                client=client,
+                query="*",
+                top_k=max(top_k * 3, top_k),
+                filter_expr=None,
+                allow_vector=False,
+            )
+            filtered = [result for result in results if self._matches_document(result, document)]
+            return self._to_citations(filtered[:top_k])
+        except Exception as e:
+            logger.error("Document preview failed: %s", e, exc_info=True)
             return []
 
     async def upsert_chunks(

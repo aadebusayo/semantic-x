@@ -13,11 +13,15 @@ var chatList      = document.getElementById('chatList');
 var chatTitle     = document.getElementById('chatTitle');
 var newChatBtn    = document.getElementById('newChatBtn');
 var renameBtn     = document.getElementById('renameBtn');
+var docSelect     = document.getElementById('docSelect');
+var previewDocBtn = document.getElementById('previewDocBtn');
+var selectedDocMeta = document.getElementById('selectedDocMeta');
 var toggleCiteBtn = document.getElementById('toggleCiteBtn');
 var citeCount     = document.getElementById('citeCount');
 var citePanel     = document.getElementById('citePanel');
 var citePanelBody = document.getElementById('citePanelBody');
 var citePanelLabel= document.getElementById('citePanelLabel');
+var citePanelMeta = document.getElementById('citePanelMeta');
 var closeCiteBtn  = document.getElementById('closeCiteBtn');
 var renameModal   = document.getElementById('renameModal');
 var renameInput   = document.getElementById('renameInput');
@@ -72,6 +76,11 @@ function renderMarkdown(raw) {
     }
     return '<p>' + lines.map(inlineRender).join('<br>') + '</p>';
   }).join('');
+}
+
+function basename(path) {
+  if (!path) return '';
+  return String(path).split('/').pop();
 }
 
 /* ── Sidebar ─────────────────────────────────────────────── */
@@ -150,6 +159,46 @@ async function openChat(chatId, knownTitle) {
   } catch (e) {
     appendBubble('assistant', '\u26a0\ufe0f Could not load transcript.', [], 0, 'none');
   }
+}
+
+function getSelectedDocument() {
+  if (!docSelect || !docSelect.value) return null;
+  var option = docSelect.options[docSelect.selectedIndex];
+  return {
+    id: docSelect.value,
+    name: option && option.dataset && option.dataset.name ? option.dataset.name : basename(docSelect.value)
+  };
+}
+
+function updateSelectedDocumentMeta() {
+  var doc = getSelectedDocument();
+  if (!doc) {
+    selectedDocMeta.textContent = 'No document selected.';
+    selectedDocMeta.title = '';
+    previewDocBtn.disabled = true;
+    return;
+  }
+  selectedDocMeta.textContent = 'Selected document: ' + doc.name;
+  selectedDocMeta.title = 'Storage id: ' + doc.id;
+  previewDocBtn.disabled = false;
+}
+
+async function loadDocuments() {
+  if (!docSelect) return;
+  try {
+    var docs = await api('/documents?limit=200');
+    docSelect.innerHTML = '<option value="">All documents</option>';
+    docs.forEach(function(doc) {
+      var option = document.createElement('option');
+      option.value = doc.id;
+      option.dataset.name = doc.name || basename(doc.id);
+      option.textContent = doc.name || basename(doc.id);
+      docSelect.appendChild(option);
+    });
+  } catch (e) {
+    console.warn('loadDocuments', e);
+  }
+  updateSelectedDocumentMeta();
 }
 
 /* ── Thread ──────────────────────────────────────────────── */
@@ -316,7 +365,8 @@ function hideCiteToggle() {
   citeCount.textContent = '0';
 }
 
-function updateCitePanel(citations, answerText) {
+function updateCitePanel(citations, answerText, options) {
+  options = options || {};
   // Collect which [N] indices actually appear in the answer text
   var usedIndices = {};
   if (answerText) {
@@ -331,18 +381,22 @@ function updateCitePanel(citations, answerText) {
   });
   if (filtered.length === 0) filtered = citations; // safety: show all if filter removes everything
 
-  citePanelLabel.textContent = filtered.length + ' Document' + (filtered.length !== 1 ? 's' : '') + ' Referenced';
+  citePanelLabel.textContent = options.label || (filtered.length + ' Document' + (filtered.length !== 1 ? 's' : '') + ' Referenced');
+  citePanelMeta.textContent = options.meta || 'Assistant citations and document previews appear here.';
   citePanelBody.innerHTML = '';
   filtered.forEach(function(c) {
     var origIdx = citations.indexOf(c);
     var card = document.createElement('div');
     card.className = 'cite-card';
     var excerpt = (c.excerpt || '').replace(/<[^>]+>/g, '');
+    var documentName = c.document_name || options.documentName || 'Document';
+    var documentId = c.document_id || options.documentId || '';
     card.innerHTML =
       '<div class="cite-card-name">' +
         '<span class="cite-card-num">' + (origIdx + 1) + '</span>' +
-        escHtml(c.document_name || 'Document') +
+        escHtml(documentName) +
       '</div>' +
+      (documentId ? '<div class="cite-card-id">' + escHtml(documentId) + '</div>' : '') +
       (excerpt ? '<div class="cite-card-excerpt">' + escHtml(excerpt) + '</div>' : '');
     citePanelBody.appendChild(card);
   });
@@ -365,6 +419,10 @@ toggleCiteBtn.addEventListener('click', function() {
   }
 });
 closeCiteBtn.addEventListener('click', hideCitePanel);
+docSelect.addEventListener('change', updateSelectedDocumentMeta);
+previewDocBtn.addEventListener('click', function() {
+  previewSelectedDocument();
+});
 
 /* ── Rename ──────────────────────────────────────────────── */
 function showRenameBtn() {
@@ -416,24 +474,67 @@ input.addEventListener('keydown', function(e) {
 
 sendBtn.addEventListener('click', sendMessage);
 
+async function previewSelectedDocument(explicitDocument) {
+  var documentRef = explicitDocument || getSelectedDocument();
+  if (!documentRef || sending) return;
+
+  sending = true;
+  sendBtn.disabled = true;
+  previewDocBtn.disabled = true;
+
+  try {
+    var result = await api('/documents/preview', {
+      method: 'POST',
+      body: JSON.stringify({ document: documentRef, top_k: 5 })
+    });
+    var citations = result.citations || [];
+    var docName = (result.document && result.document.name) || documentRef.name || basename(documentRef.id);
+    var docId = (result.document && result.document.id) || documentRef.id;
+    var count = updateCitePanel(citations, '', {
+      label: citations.length + ' Excerpt' + (citations.length !== 1 ? 's' : '') + ' from ' + docName,
+      meta: 'Preview mode: empty input with a selected document opens indexed excerpts without sending a chat message.',
+      documentName: docName,
+      documentId: docId
+    });
+    showCiteToggle(count);
+    openCitePanel();
+  } catch (e) {
+    alert('Preview failed: ' + e.message);
+  } finally {
+    sending = false;
+    sendBtn.disabled = false;
+    updateSelectedDocumentMeta();
+    input.focus();
+  }
+}
+
 async function sendMessage() {
   var text = input.value.trim();
-  if (!text || sending) return;
+  if (sending) return;
 
   // @docId: extraction  –  e.g. type "@docId:abc123 " before the question
   var docId   = null;
   var cleaned = text.replace(/^@docId:(\S+)\s*/, function(_, id) { docId = id; return ''; }).trim();
-  if (!cleaned) cleaned = text;  // nothing left? send as-is
+  var selectedDocument = getSelectedDocument();
+  var payloadDocument = selectedDocument || (docId ? { id: docId, name: basename(docId) } : null);
+
+  if (!text && payloadDocument) {
+    await previewSelectedDocument(payloadDocument);
+    return;
+  }
+
+  if (!text) return;
+  if (!cleaned) cleaned = text;
 
   sending = true;
   sendBtn.disabled = true;
+  previewDocBtn.disabled = true;
   input.value = '';
   input.style.height = 'auto';
 
   // Calculate turn index for the *assistant* response we're about to add
   // (user turn = N, assistant turn = N+1)
   var existingTurns = thread.querySelectorAll('.msg-row').length;
-  var assistantTurnIdx = existingTurns + 1;  // after user row appended it becomes +2, but index is 0-based from cosmos
 
   appendBubble('user', cleaned, [], existingTurns, 'none');
   appendThinking();
@@ -441,7 +542,7 @@ async function sendMessage() {
 
   try {
     var payload = { message: cleaned, chat_id: activeChatId || undefined };
-    if (docId) payload.document = { id: docId };
+    if (payloadDocument) payload.document = payloadDocument;
 
     var result = await api('/chat/messages', { method: 'POST', body: JSON.stringify(payload) });
 
@@ -466,6 +567,7 @@ async function sendMessage() {
   } finally {
     sending = false;
     sendBtn.disabled = false;
+    updateSelectedDocumentMeta();
     input.focus();
   }
 }
@@ -487,6 +589,7 @@ newChatBtn.addEventListener('click', function() {
 
 /* ── Boot ────────────────────────────────────────────────── */
 (async function boot() {
+  await loadDocuments();
   await loadHistory();
   input.focus();
 }());

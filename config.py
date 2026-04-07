@@ -92,7 +92,7 @@ class Settings(BaseSettings):
     cosmos_entity_container: str = Field(default="Entity")
 
     entity_root_basepath_id: str = Field(default="0000-0000-0000-0000")
-    entity_file_object_type: int = Field(default=0)
+    entity_file_object_type: int = Field(default=1)
 
     # Azure Blob Storage (source documents)
     azure_storage_connection_string: Optional[str] = Field(default=None)

@@ -125,23 +125,23 @@ If your index uses different field names, configure them via the `SEARCH_*_FIELD
 If you want a one-time index population (not continuously wired into the app), run:
 
 ```bash
-python scripts/backfill_search_from_entity.py
+python scripts/reconcile_document_identity.py
 ```
 
 The script:
 
 - Reads upload metadata from Cosmos container `COSMOS_ENTITY_CONTAINER` (default `Entity`)
+- Rewrites Azure AI Search chunks to canonical Entity document ids and names
 - Uses `BasePathId` rules to resolve blob path from IDs:
     - `BasePathId == ENTITY_ROOT_BASEPATH_ID` (default `0000-0000-0000-0000`) means blob is at root: `<id>`
     - Otherwise it builds nested path by following parent `BasePathId` chain: `<parentId>/<childId>/.../<id>`
-- Downloads each resolved blob from `AZURE_STORAGE_CONTAINER`
-- Extracts text, chunks it, and upserts chunk documents into Azure AI Search
+- For file entities (`ENTITY_FILE_OBJECT_TYPE=1`), canonical search ids are the Entity `id` and the storage blob remains a separate locator
 
 Set these env vars before running:
 
 - `COSMOS_ENTITY_CONTAINER` (default `Entity`)
 - `ENTITY_ROOT_BASEPATH_ID` (default `0000-0000-0000-0000`)
-- `ENTITY_FILE_OBJECT_TYPE` (default `0`, to index only object type 0)
+- `ENTITY_FILE_OBJECT_TYPE` (default `1`, to index file objects)
 - `BACKFILL_LOG_LEVEL` (default `INFO`, set `DEBUG` for per-document detail)
 - `BACKFILL_LOG_EVERY` (default `50`, periodic progress interval)
 
@@ -161,6 +161,13 @@ Set these env vars before running:
     - Body: `{ document: {id?, name?}, text? }`
     - Returns: `{ questions[] }`
 
+- `GET /api/v1/documents?limit=`
+    - Returns: processed indexed documents using canonical document ids and display names
+
+- `POST /api/v1/documents/preview`
+    - Body: `{ document: {id?, name?}, top_k? }`
+    - Returns: excerpt citations for the selected document without creating a chat turn
+
 - `GET /api/v1/suggestions/recent?limit=`
     - Returns: recent quick questions by recency
 
@@ -172,6 +179,8 @@ After starting the API, open:
 
 The playground lets you test locally:
 
+- Browse indexed documents by canonical id and display name
+- Preview indexed excerpts for a selected document without sending an empty chat message
 - Send chat messages (`POST /api/v1/chat/messages`)
 - List chats (`GET /api/v1/chats`)
 - Load a chat transcript (`GET /api/v1/chats/{chat_id}`)

@@ -26,7 +26,8 @@ from api.router import router as api_router
 from config import get_settings
 from services.azure_ai_search import AzureAISearchService
 from services.blob_storage import BlobStorageSource
-from services.cosmos_repositories import CosmosChatRepository, CosmosIngestionRepository, CosmosSuggestionsRepository
+from services.cosmos_repositories import CosmosChatRepository, CosmosEntityRepository, CosmosIngestionRepository, CosmosSuggestionsRepository
+from services.document_catalog import DocumentCatalogService
 from services.ingestion_worker import IngestionWorker
 from services.llm_service import AzureOpenAILLMService
 from services.signalr_service import SignalRService
@@ -71,9 +72,11 @@ async def lifespan(app: FastAPI):
     chat_repo = CosmosChatRepository.from_settings(settings)
     suggestions_repo = CosmosSuggestionsRepository.from_settings(settings)
     ingestion_repo = CosmosIngestionRepository.from_settings(settings)
+    entity_repo = CosmosEntityRepository.from_settings(settings)
 
     ingestion_worker = None
     blob_source = None
+    document_catalog = None
 
     async def _safe_close(name: str, closer):
         try:
@@ -88,7 +91,9 @@ async def lifespan(app: FastAPI):
     app.state.chat_repo = chat_repo
     app.state.suggestions_repo = suggestions_repo
     app.state.ingestion_repo = ingestion_repo
+    app.state.entity_repo = entity_repo
     app.state.blob_source = None
+    app.state.document_catalog = None
 
     try:
         await llm_service.open()
@@ -96,6 +101,7 @@ async def lifespan(app: FastAPI):
         await chat_repo.open()
         await suggestions_repo.open()
         await ingestion_repo.open()
+        await entity_repo.open()
 
         if settings.azure_storage_connection_string and settings.azure_storage_container:
             blob_source = BlobStorageSource(
@@ -105,6 +111,13 @@ async def lifespan(app: FastAPI):
             )
             await blob_source.open()
             app.state.blob_source = blob_source
+
+        document_catalog = DocumentCatalogService(
+            ingestion_repo=ingestion_repo,
+            entity_repo=entity_repo,
+            blob_source=blob_source,
+        )
+        app.state.document_catalog = document_catalog
 
         # Optional: pull-based ingestion (no messaging/queue required)
         if (
@@ -117,6 +130,7 @@ async def lifespan(app: FastAPI):
                 search_service=search_service,
                 ingestion_repo=ingestion_repo,
                 suggestions_repo=suggestions_repo,
+                document_catalog=document_catalog,
             )
             try:
                 await ingestion_worker.open()
@@ -140,6 +154,7 @@ async def lifespan(app: FastAPI):
         await _safe_close("chat repository", chat_repo.close)
         await _safe_close("suggestions repository", suggestions_repo.close)
         await _safe_close("ingestion repository", ingestion_repo.close)
+        await _safe_close("entity repository", entity_repo.close)
         await _safe_close("llm service", llm_service.close)
         await _safe_close("signalr service", signalr_service.close)
         await _safe_close("search service", search_service.close)

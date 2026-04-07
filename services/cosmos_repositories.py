@@ -28,6 +28,9 @@ class _InMemoryContainer:
         self._pk_field = pk_field
         self._items: Dict[str, Dict[str, Any]] = {}
 
+    def all_items(self) -> List[Dict[str, Any]]:
+        return list(self._items.values())
+
     async def upsert_item(self, item: Dict[str, Any]) -> Dict[str, Any]:
         self._items[item["id"]] = item
         return item
@@ -253,12 +256,13 @@ class CosmosSuggestionsRepository(_CosmosBase):
     """Stores per-document quick questions.
 
         Expected container partition key: /document_id
-    Item shape:
-      - id: stable unique key (documentKey)
+        Item shape:
+        - id: stable unique key (documentKey)
             - document_id
             - documentKey
-      - documentId (optional)
-      - documentName (optional)
+        - documentId (optional, canonical document id)
+        - documentName (optional, display name)
+        - blobName (optional, storage locator)
       - questions: [str]
       - createdAt (ISO)
     """
@@ -284,7 +288,14 @@ class CosmosSuggestionsRepository(_CosmosBase):
             return f"name:{document_name}"
         return "unknown"
 
-    async def upsert_questions(self, *, document_id: Optional[str], document_name: Optional[str], questions: List[str]) -> Dict[str, Any]:
+    async def upsert_questions(
+        self,
+        *,
+        document_id: Optional[str],
+        document_name: Optional[str],
+        questions: List[str],
+        blob_name: Optional[str] = None,
+    ) -> Dict[str, Any]:
         key = self._doc_key(document_id, document_name)
         now = utcnow()
         item = {
@@ -293,6 +304,7 @@ class CosmosSuggestionsRepository(_CosmosBase):
             "documentKey": key,
             "documentId": document_id,
             "documentName": document_name,
+            "blobName": blob_name,
             "questions": questions,
             "createdAt": now.isoformat(),
         }
@@ -312,7 +324,10 @@ class CosmosSuggestionsRepository(_CosmosBase):
             )
             return items[:limit]
 
-        query = "SELECT TOP @limit c.documentId, c.documentName, c.questions, c.createdAt FROM c ORDER BY c.createdAt DESC"
+        query = (
+            "SELECT TOP @limit c.documentId, c.documentName, c.blobName, c.questions, c.createdAt "
+            "FROM c ORDER BY c.createdAt DESC"
+        )
         items_iter = self._container.query_items(
             query=query,
             parameters=[{"name": "@limit", "value": limit}],
@@ -336,13 +351,125 @@ class CosmosSuggestionsRepository(_CosmosBase):
             return
 
 
+class CosmosEntityRepository(_CosmosBase):
+    _fallback_file_object_type = 1
+
+    def __init__(self, *, endpoint: Optional[str], key: Optional[str], database: str, container: str, file_object_type: int):
+        super().__init__(endpoint=endpoint, key=key, database=database, container=container)
+        self._file_object_type = file_object_type
+        self._mem = _InMemoryContainer(pk_field="id")
+
+    @classmethod
+    def from_settings(cls, settings: Settings) -> "CosmosEntityRepository":
+        return cls(
+            endpoint=settings.cosmos_endpoint,
+            key=settings.cosmos_key,
+            database=settings.cosmos_database,
+            container=settings.cosmos_entity_container,
+            file_object_type=settings.entity_file_object_type,
+        )
+
+    @staticmethod
+    def _filename_parts(filename: str) -> tuple[str, str]:
+        value = filename.strip()
+        if not value:
+            return "", ""
+        if "." not in value:
+            return value, ""
+        name, ext = value.rsplit(".", 1)
+        return name, f".{ext}"
+
+    async def _query_document_by_id(self, *, entity_id: str, object_type: int) -> Optional[Dict[str, Any]]:
+        if self._container is None:
+            try:
+                item = await self._mem.read_item(item=entity_id, partition_key=entity_id)
+            except Exception:
+                return None
+            if item.get("ObjectType") != object_type:
+                return None
+            return item
+
+        query = (
+            "SELECT TOP 1 c.id, c.Name, c.DocExtension, c.BasePathId, c.ObjectType, c.ContentType "
+            "FROM c WHERE c.id = @id AND c.ObjectType = @objectType"
+        )
+        items_iter = self._container.query_items(
+            query=query,
+            parameters=[
+                {"name": "@id", "value": entity_id},
+                {"name": "@objectType", "value": object_type},
+            ],
+        )
+        async for item in items_iter:
+            return item
+        return None
+
+    async def get_document(self, *, entity_id: str) -> Optional[Dict[str, Any]]:
+        if not entity_id:
+            return None
+
+        item = await self._query_document_by_id(entity_id=entity_id, object_type=self._file_object_type)
+        if item is not None:
+            return item
+
+        if self._file_object_type != self._fallback_file_object_type:
+            return await self._query_document_by_id(entity_id=entity_id, object_type=self._fallback_file_object_type)
+        return None
+
+    async def find_document_by_filename(self, *, filename: str) -> Optional[Dict[str, Any]]:
+        name, extension = self._filename_parts(filename)
+        if not name:
+            return None
+
+        candidates: List[Dict[str, Any]] = []
+        object_types = [self._file_object_type]
+        if self._file_object_type != self._fallback_file_object_type:
+            object_types.append(self._fallback_file_object_type)
+
+        if self._container is None:
+            for item in self._mem.all_items():
+                if item.get("ObjectType") not in object_types:
+                    continue
+                if str(item.get("Name") or "") != name:
+                    continue
+                item_ext = str(item.get("DocExtension") or "")
+                if item_ext.lower() != extension.lower():
+                    continue
+                candidates.append(item)
+                if len(candidates) >= 2:
+                    break
+        else:
+            query = (
+                "SELECT TOP 2 c.id, c.Name, c.DocExtension, c.BasePathId, c.ObjectType, c.ContentType "
+                "FROM c WHERE c.Name = @name AND LOWER(c.DocExtension) = @extension AND ARRAY_CONTAINS(@objectTypes, c.ObjectType)"
+            )
+            items_iter = self._container.query_items(
+                query=query,
+                parameters=[
+                    {"name": "@name", "value": name},
+                    {"name": "@extension", "value": extension.lower()},
+                    {"name": "@objectTypes", "value": object_types},
+                ],
+            )
+            async for item in items_iter:
+                candidates.append(item)
+                if len(candidates) >= 2:
+                    break
+
+        if len(candidates) != 1:
+            return None
+        return candidates[0]
+
+
 class CosmosIngestionRepository(_CosmosBase):
     """Tracks which blobs have been processed.
 
         Expected container partition key: /document_id
-    Item shape:
-      - id: blob name
-            - document_id: blob name
+        Item shape:
+        - id: stable hash of blob name
+            - document_id: canonical document id
+            - document_name: canonical display name
+            - blobName: storage blob path
             - source: "blob"
       - container: storage container name
       - etag: last processed ETag
@@ -371,20 +498,28 @@ class CosmosIngestionRepository(_CosmosBase):
         )
 
     async def get(self, *, blob_name: str) -> Optional[Dict[str, Any]]:
-        item_id = self._safe_id(blob_name)
         if self._container is not None:
-            try:
-                return await self._container.read_item(item=item_id, partition_key=blob_name)
-            except Exception:
-                return None
-        try:
-            return await self._mem.read_item(item=item_id, partition_key=blob_name)
-        except Exception:
+            query = "SELECT TOP 1 * FROM c WHERE c.blobName = @blobName OR (NOT IS_DEFINED(c.blobName) AND c.document_id = @blobName)"
+            items_iter = self._container.query_items(
+                query=query,
+                parameters=[{"name": "@blobName", "value": blob_name}],
+            )
+            async for item in items_iter:
+                return item
             return None
+
+        for item in self._mem.all_items():
+            if item.get("blobName") == blob_name:
+                return item
+            if "blobName" not in item and item.get("document_id") == blob_name:
+                return item
+        return None
 
     async def upsert_status(
         self,
         *,
+        document_id: str,
+        document_name: Optional[str],
         blob_name: str,
         storage_container: str,
         etag: str,
@@ -394,9 +529,26 @@ class CosmosIngestionRepository(_CosmosBase):
     ) -> Dict[str, Any]:
         now = utcnow().isoformat()
         item_id = self._safe_id(blob_name)
+        existing = await self.get(blob_name=blob_name)
+        if existing is not None and existing.get("document_id") != document_id:
+            if self._container is not None:
+                try:
+                    await self._container.delete_item(item=existing["id"], partition_key=existing["document_id"])
+                except Exception:
+                    pass
+            else:
+                try:
+                    await self._mem.delete_item(item=existing["id"], partition_key=existing["document_id"])
+                except Exception:
+                    pass
+
         item = {
             "id": item_id,
-            "document_id": blob_name,
+            "document_id": document_id,
+            "document_name": document_name,
+            "documentId": document_id,
+            "documentName": document_name,
+            "blobName": blob_name,
             "source": "blob",
             "container": storage_container,
             "etag": etag,
@@ -415,13 +567,12 @@ class CosmosIngestionRepository(_CosmosBase):
 
     async def list_documents(self) -> List[Dict[str, Any]]:
         if self._container is None:
-            items = await self._mem.query_items(
-                "SELECT * FROM c",
-                parameters=[],
-            )
-            return items
+            return self._mem.all_items()
 
-        query = "SELECT c.document_id, c.source, c.status, c.updatedAt FROM c"
+        query = (
+            "SELECT c.document_id, c.document_name, c.documentId, c.documentName, c.blobName, "
+            "c.source, c.status, c.updatedAt FROM c"
+        )
         items_iter = self._container.query_items(query=query, parameters=[])
         out: List[Dict[str, Any]] = []
         async for it in items_iter:
@@ -429,14 +580,18 @@ class CosmosIngestionRepository(_CosmosBase):
         return out
 
     async def delete(self, *, blob_name: str) -> None:
-        item_id = self._safe_id(blob_name)
+        existing = await self.get(blob_name=blob_name)
+        if existing is None:
+            return
+
         if self._container is not None:
             try:
-                await self._container.delete_item(item=item_id, partition_key=blob_name)
+                await self._container.delete_item(item=existing["id"], partition_key=existing["document_id"])
             except Exception:
                 return
             return
+
         try:
-            await self._mem.delete_item(item=item_id, partition_key=blob_name)
+            await self._mem.delete_item(item=existing["id"], partition_key=existing["document_id"])
         except Exception:
             return

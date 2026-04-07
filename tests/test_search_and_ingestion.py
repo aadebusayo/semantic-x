@@ -5,6 +5,7 @@ from dataclasses import dataclass
 
 from models.infosearch_api import DocumentRef
 from services.azure_ai_search import AzureAISearchService
+from services.document_catalog import DocumentCatalogService
 from services.ingestion_worker import IngestionWorker
 
 
@@ -235,11 +236,12 @@ class _SuggestionsRepo:
         self.calls = []
         self.deleted = []
 
-    async def upsert_questions(self, *, document_id=None, document_name=None, questions=None):
+    async def upsert_questions(self, *, document_id=None, document_name=None, questions=None, blob_name=None):
         self.calls.append(
             {
                 "document_id": document_id,
                 "document_name": document_name,
+                "blob_name": blob_name,
                 "questions": list(questions or []),
             }
         )
@@ -247,6 +249,22 @@ class _SuggestionsRepo:
 
     async def delete_questions(self, *, document_id=None, document_name=None):
         self.deleted.append({"document_id": document_id, "document_name": document_name})
+
+
+class _EntityRepo:
+    async def get_document(self, *, entity_id: str):
+        if entity_id == "manual":
+            return {"id": "manual", "Name": "Manual", "DocExtension": ".pdf"}
+        if entity_id == "target-doc":
+            return {"id": "target-doc", "Name": "target", "DocExtension": ".pdf"}
+        return None
+
+    async def find_document_by_filename(self, *, filename: str):
+        if filename in {"Manual.pdf", "manual.pdf"}:
+            return {"id": "manual", "Name": "Manual", "DocExtension": ".pdf"}
+        if filename == "target.pdf":
+            return {"id": "target-doc", "Name": "target", "DocExtension": ".pdf"}
+        return None
 
 
 class _Settings:
@@ -283,16 +301,26 @@ def test_ingestion_worker_reprocesses_changed_pdf(monkeypatch):
             search_service=search,
             ingestion_repo=ingestion_repo,
             suggestions_repo=suggestions_repo,
+            document_catalog=DocumentCatalogService(
+                ingestion_repo=ingestion_repo,
+                entity_repo=_EntityRepo(),
+                blob_source=blob_source,
+            ),
         )
 
         processed = await worker.run_once(limit=10)
 
         assert processed == 1
         assert len(search.calls) == 1
-        assert search.calls[0]["document_id"] == "folder/manual.pdf"
-        assert search.calls[0]["document_name"] == "manual.pdf"
+        assert search.calls[0]["document_id"] == "manual"
+        assert search.calls[0]["document_name"] == "Manual.pdf"
         assert ingestion_repo.statuses[-1]["status"] == "processed"
         assert ingestion_repo.statuses[-1]["etag"] == "new-etag"
+        assert ingestion_repo.statuses[-1]["document_id"] == "manual"
+        assert ingestion_repo.statuses[-1]["blob_name"] == "folder/manual.pdf"
+        assert suggestions_repo.calls[-1]["document_id"] == "manual"
+        assert suggestions_repo.calls[-1]["document_name"] == "Manual.pdf"
+        assert suggestions_repo.calls[-1]["blob_name"] == "folder/manual.pdf"
 
     asyncio.run(_run())
 
@@ -309,8 +337,8 @@ def test_ingestion_worker_reconciles_deleted_documents():
         search = _SearchRecorder()
         ingestion_repo = _IngestionRepo(prior=None)
         ingestion_repo.documents = [
-            {"document_id": "folder/live.pdf", "source": "blob", "status": "processed"},
-            {"document_id": "folder/deleted.pdf", "source": "blob", "status": "processed"},
+            {"document_id": "live", "document_name": "live.pdf", "blobName": "folder/live.pdf", "source": "blob", "status": "processed"},
+            {"document_id": "deleted", "document_name": "deleted.pdf", "blobName": "folder/deleted.pdf", "source": "blob", "status": "processed"},
         ]
         suggestions_repo = _SuggestionsRepo()
 
@@ -320,13 +348,35 @@ def test_ingestion_worker_reconciles_deleted_documents():
             search_service=search,
             ingestion_repo=ingestion_repo,
             suggestions_repo=suggestions_repo,
+            document_catalog=DocumentCatalogService(
+                ingestion_repo=ingestion_repo,
+                entity_repo=_EntityRepo(),
+                blob_source=blob_source,
+            ),
         )
 
         removed = await worker.reconcile_deleted_documents()
 
         assert removed == 1
-        assert search.deleted == ["folder/deleted.pdf"]
-        assert suggestions_repo.deleted == [{"document_id": "folder/deleted.pdf", "document_name": None}]
+        assert search.deleted == ["deleted"]
+        assert suggestions_repo.deleted == [
+            {"document_id": "deleted", "document_name": "deleted.pdf"},
+        ]
         assert ingestion_repo.deleted == ["folder/deleted.pdf"]
+
+    asyncio.run(_run())
+
+
+def test_preview_document_is_limited_to_selected_document():
+    async def _run():
+        service = _make_search_service(_SearchClientForPreferredDoc())
+
+        citations = await service.preview_document(
+            document=DocumentRef(id="target-doc", name="target.pdf"),
+            top_k=2,
+        )
+
+        assert [citation.document_id for citation in citations] == ["target-doc"]
+        assert citations[0].excerpt == "Target fallback excerpt."
 
     asyncio.run(_run())
