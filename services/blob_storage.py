@@ -35,7 +35,7 @@ class BlobStorageSource:
         assert self._svc is not None
         return self._svc.get_container_client(self._container_name)
 
-    async def list_blobs(self, *, limit: int = 500) -> AsyncIterator[BlobInfo]:
+    async def list_blobs(self, *, limit: Optional[int] = 500) -> AsyncIterator[BlobInfo]:
         container = self._container()
         count = 0
         async for blob in container.list_blobs(name_starts_with=self._prefix):
@@ -46,7 +46,7 @@ class BlobStorageSource:
             size = int(getattr(blob, "size", 0) or 0)
             yield BlobInfo(name=blob.name, etag=str(etag), last_modified_iso=last_modified_iso, size=size)
             count += 1
-            if count >= limit:
+            if limit is not None and count >= limit:
                 break
 
     async def download(self, *, blob_name: str) -> bytes:

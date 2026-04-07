@@ -439,3 +439,40 @@ class AzureAISearchService:
             await client.delete_documents(
                 documents=[{self._chunk_key_field: key} for key in batch]
             )
+
+    async def delete_all_chunks(self) -> int:
+        client = self._get_client()
+        if client is None:
+            logger.warning("Azure AI Search is not configured; skipping index clear")
+            return 0
+
+        removed = 0
+        batch_size = 200
+        while True:
+            pageable = await client.search(
+                search_text="*",
+                top=1000,
+                query_type="simple",
+                select=[self._chunk_key_field],
+            )
+
+            keys: List[str] = []
+            async for item in pageable:
+                key = dict(item).get(self._chunk_key_field)
+                if isinstance(key, str) and key:
+                    keys.append(key)
+
+            if not keys:
+                break
+
+            for i in range(0, len(keys), batch_size):
+                batch = keys[i : i + batch_size]
+                await client.delete_documents(
+                    documents=[{self._chunk_key_field: key} for key in batch]
+                )
+                removed += len(batch)
+
+            if len(keys) < 1000:
+                break
+
+        return removed

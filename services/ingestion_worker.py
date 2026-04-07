@@ -89,7 +89,7 @@ class IngestionWorker:
             except asyncio.TimeoutError:
                 continue
 
-    async def run_once(self, *, limit: int) -> int:
+    async def run_once(self, *, limit: int | None, force: bool = False) -> int:
         if not self._settings.azure_storage_connection_string or not self._settings.azure_storage_container:
             return 0
 
@@ -103,7 +103,7 @@ class IngestionWorker:
                 continue
 
             prior = await self._ingestion_repo.get(blob_name=blob.name)
-            if prior and prior.get("etag") == blob.etag and prior.get("status") == "processed":
+            if (not force) and prior and prior.get("etag") == blob.etag and prior.get("status") == "processed":
                 continue
 
             try:

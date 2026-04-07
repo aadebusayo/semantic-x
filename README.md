@@ -122,7 +122,25 @@ If your index uses different field names, configure them via the `SEARCH_*_FIELD
 
 ## One-time backfill indexing script
 
-If you want a one-time index population (not continuously wired into the app), run:
+If you want a clean rebuild of Azure AI Search from Blob using the canonical Entity flow, run:
+
+```bash
+python scripts/clear_and_reindex_search.py
+```
+
+This script:
+
+- Deletes all current chunk documents from the search index
+- Reprocesses every blob through the app's ingestion pipeline
+- Writes canonical `documentId` values based on Entity file records
+
+If you want to rebuild without clearing first, run:
+
+```bash
+python scripts/clear_and_reindex_search.py --skip-clear
+```
+
+If you want an in-place identity migration of existing search chunks instead, run:
 
 ```bash
 python scripts/reconcile_document_identity.py
