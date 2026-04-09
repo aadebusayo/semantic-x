@@ -174,12 +174,27 @@ class AzureAISearchService:
         results: List[Dict[str, Any]] = []
         async for item in pageable:
             result: Dict[str, Any] = dict(item)
-            score = result.get("@search.score")
-            if self._min_citation_score > 0 and (score is None or score < self._min_citation_score):
-                logger.debug("Skipping citation with score=%s (below threshold %s)", score, self._min_citation_score)
+            if not self._passes_score_threshold(result):
+                logger.debug(
+                    "Skipping citation with score=%s reranker=%s (below threshold %s)",
+                    result.get("@search.score"),
+                    result.get("@search.reranker_score"),
+                    self._min_citation_score,
+                )
                 continue
             results.append(result)
         return results
+
+    def _passes_score_threshold(self, result: Dict[str, Any]) -> bool:
+        if self._min_citation_score <= 0:
+            return True
+
+        reranker_score = result.get("@search.reranker_score")
+        if reranker_score is not None:
+            return reranker_score > 0
+
+        score = result.get("@search.score")
+        return score is not None and score >= self._min_citation_score
 
     async def _search_results(
         self,
@@ -289,7 +304,7 @@ class AzureAISearchService:
                     preferred_results = await self._search_results(
                         client=client,
                         query=query,
-                        top_k=1,
+                        top_k=top_k,
                         filter_expr=filter_expr,
                         allow_vector=True,
                     )
@@ -297,10 +312,13 @@ class AzureAISearchService:
                         preferred_results = await self._search_results(
                             client=client,
                             query="*",
-                            top_k=1,
+                            top_k=top_k,
                             filter_expr=filter_expr,
                             allow_vector=False,
                         )
+
+                if preferred_results:
+                    return self._to_citations(preferred_results[:top_k])
 
                 global_results = await self._search_results(
                     client=client,
@@ -316,18 +334,10 @@ class AzureAISearchService:
                             preferred_results = [result]
                             break
 
-                merged: List[Dict[str, Any]] = []
-                seen: Set[str] = set()
-                for result in preferred_results + global_results:
-                    key = self._result_key(result)
-                    if key in seen:
-                        continue
-                    seen.add(key)
-                    merged.append(result)
-                    if len(merged) >= top_k:
-                        break
+                if preferred_results:
+                    return self._to_citations(preferred_results[:top_k])
 
-                return self._to_citations(merged)
+                return self._to_citations(global_results)
 
             plain_results = await self._search_results(
                 client=client,

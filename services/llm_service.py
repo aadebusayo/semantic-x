@@ -26,6 +26,29 @@ def _is_unsupported_temperature_error(exc: Exception) -> bool:
     return "temperature" in message and "unsupported value" in message
 
 
+def _is_unsupported_reasoning_effort_error(exc: Exception) -> bool:
+    message = str(exc).lower()
+    return "reasoning_effort" in message and ("unsupported" in message or "unknown" in message)
+
+
+def _is_hidden_reasoning_exhaustion(response) -> bool:
+    if not response.choices:
+        return False
+    choice = response.choices[0]
+    message = getattr(choice, "message", None)
+    content = (getattr(message, "content", None) or "").strip() if message is not None else ""
+    if content:
+        return False
+    if getattr(choice, "finish_reason", None) != "length":
+        return False
+
+    usage = getattr(response, "usage", None)
+    details = getattr(usage, "completion_tokens_details", None)
+    reasoning_tokens = getattr(details, "reasoning_tokens", 0) or 0
+    completion_tokens = getattr(usage, "completion_tokens", 0) or 0
+    return completion_tokens > 0 and reasoning_tokens >= completion_tokens
+
+
 class AzureOpenAILLMService:
     def __init__(
         self,
@@ -97,7 +120,12 @@ class AzureOpenAILLMService:
             return await self._client.chat.completions.create(**kwargs)
         except Exception as exc:
             if "temperature" not in kwargs or not _is_unsupported_temperature_error(exc):
-                raise
+                if "reasoning_effort" not in kwargs or not _is_unsupported_reasoning_effort_error(exc):
+                    raise
+                retry_kwargs = dict(kwargs)
+                retry_kwargs.pop("reasoning_effort", None)
+                logger.info("Retrying Azure OpenAI completion without reasoning_effort for deployment=%r", self._deployment)
+                return await self._client.chat.completions.create(**retry_kwargs)
             retry_kwargs = dict(kwargs)
             retry_kwargs.pop("temperature", None)
             logger.info("Retrying Azure OpenAI completion without temperature for deployment=%r", self._deployment)
@@ -143,8 +171,10 @@ class AzureOpenAILLMService:
             "- Document questions: use the provided document excerpts when relevant. "
             "Cite each source inline with its number, e.g. [1] or [2], placed directly after the sentence that uses it. "
             "Only cite numbers that exist in the provided list. "
-            "If citations exist but are unrelated, ignore them and answer from general knowledge.\n"
-            "- Questions needing private document context not in citations: say you couldn't find relevant information in the documents."
+            "If citations are present, prefer answering from them instead of falling back to generic knowledge. "
+            "If the excerpts are only partially relevant, say that clearly and answer from the retrieved evidence first.\n"
+            "- Questions needing private document context not in citations: say you couldn't find enough relevant information in the retrieved documents.\n"
+            "- When using document excerpts, give a substantive answer: usually a short paragraph plus brief bullets only if they add clarity, not one-line fragments."
         )
 
         if citations:
@@ -152,7 +182,10 @@ class AzureOpenAILLMService:
             user_prompt = (
                 f"Question:\n{question}\n\n"
                 f"Document excerpts (cite inline with [N] when used — only use numbers from this list):\n{citations_block}\n\n"
-                "Answer concisely. Place [N] markers inline after each sentence that draws from a source."
+                "Write a grounded answer that synthesizes the excerpts into a useful response. "
+                "Prefer 2-6 complete sentences or a short paragraph with bullets only when appropriate. "
+                "Place [N] markers inline after each sentence that draws from a source. "
+                "Do not answer with vague filler if the excerpts contain specifics."
             )
         else:
             user_prompt = f"Message:\n{question}"
@@ -252,12 +285,12 @@ class AzureOpenAILLMService:
             return []
 
         prompt = (
-            f"Based on this document excerpt, generate exactly {limit} short question prompts "
-            f"that a user might want to ask. Each should be a brief phrase (3-8 words), "
-            f"like topic suggestions or quick queries.\n\n"
+            f"Based on this document excerpt, generate exactly {limit} distinct user questions. "
+            f"Each question must be specific to the document content, not a generic template. "
+            f"Avoid repeating patterns like summary, key points, or what is X about unless the content truly demands it.\n\n"
             f"Document: {name}\n"
             f"Content:\n{snippet}\n\n"
-            f"Return ONLY the {limit} suggestions, one per line, no numbering, no quotes, no extra text."
+            f"Return ONLY the {limit} questions, one per line, no numbering, no quotes, no extra text."
         )
 
         try:
@@ -268,12 +301,49 @@ class AzureOpenAILLMService:
                 max_completion_tokens=200,
             )
 
+            if _is_hidden_reasoning_exhaustion(response):
+                logger.info(
+                    "generate_suggestions: retrying with higher token budget and minimal reasoning for deployment=%r",
+                    self._deployment,
+                )
+                response = await self._create_chat_completion(
+                    model=self._deployment,
+                    messages=[{"role": "user", "content": prompt}],
+                    temperature=0.7,
+                    max_completion_tokens=600,
+                    reasoning_effort="minimal",
+                )
+
             text_response = ""
             if response.choices and response.choices[0].message:
                 text_response = (response.choices[0].message.content or "").strip()
 
             if not text_response:
-                return []
+                retry_prompt = (
+                    f"Read this document excerpt and write exactly {limit} concrete questions a user would ask after reading it. "
+                    f"Make the questions varied and content-specific.\n\n"
+                    f"Document: {name}\n"
+                    f"Excerpt:\n{snippet}\n\n"
+                    "Return only the questions, one per line."
+                )
+                response = await self._create_chat_completion(
+                    model=self._deployment,
+                    messages=[{"role": "user", "content": retry_prompt}],
+                    temperature=0.7,
+                    max_completion_tokens=220,
+                )
+                if _is_hidden_reasoning_exhaustion(response):
+                    response = await self._create_chat_completion(
+                        model=self._deployment,
+                        messages=[{"role": "user", "content": retry_prompt}],
+                        temperature=0.7,
+                        max_completion_tokens=600,
+                        reasoning_effort="minimal",
+                    )
+                if response.choices and response.choices[0].message:
+                    text_response = (response.choices[0].message.content or "").strip()
+                if not text_response:
+                    return []
 
             # Parse lines and clean up
             lines = [line.strip() for line in text_response.split("\n") if line.strip()]

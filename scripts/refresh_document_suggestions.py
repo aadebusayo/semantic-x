@@ -17,7 +17,7 @@ from services.blob_storage import BlobStorageSource
 from services.cosmos_repositories import CosmosEntityRepository, CosmosIngestionRepository, CosmosSuggestionsRepository
 from services.document_catalog import DocumentCatalogService
 from services.llm_service import AzureOpenAILLMService
-from services.suggestions_engine import build_suggestion_title, generate_quick_questions
+from services.suggestions_engine import build_suggestion_subject, build_suggestion_title, generate_quick_questions
 from services.text_extraction import extract_text
 
 
@@ -73,14 +73,16 @@ async def _refresh_document_suggestions(limit: int | None) -> None:
                 continue
 
             snippet = text[:5000]
+            title_hint = build_suggestion_title(document_name=document.name, text=snippet)
+            suggestion_subject = build_suggestion_subject(document_name=document.name, text=snippet, title=title_hint)
             questions = await llm_service.generate_suggestions(
-                document_name=document.name,
+                document_name=suggestion_subject,
                 text=snippet,
                 limit=3,
             )
             if not questions:
                 questions = generate_quick_questions(
-                    document_name=document.name,
+                    document_name=suggestion_subject,
                     text=snippet,
                     limit=3,
                 )
@@ -89,7 +91,7 @@ async def _refresh_document_suggestions(limit: int | None) -> None:
                 document_name=document.name,
                 text=snippet,
             )
-            title = (title or "").strip() or build_suggestion_title(document_name=document.name, text=snippet)
+            title = (title or "").strip() or title_hint
 
             await suggestions_repo.upsert_questions(
                 document_id=document.id,

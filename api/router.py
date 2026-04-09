@@ -35,7 +35,7 @@ from services.cosmos_repositories import CosmosChatRepository, CosmosSuggestions
 from services.document_catalog import DocumentCatalogService
 from services.llm_service import AzureOpenAILLMService
 from services.signalr_service import SignalRService
-from services.suggestions_engine import build_suggestion_title, generate_quick_questions
+from services.suggestions_engine import build_suggestion_subject, build_suggestion_title, generate_quick_questions
 from services.tts_service import AzureTTSService
 
 
@@ -305,8 +305,9 @@ async def create_document_suggestions(
 	blob_name = await document_catalog.resolve_blob_name(document)
 	document_label = document.name or document.id
 	title_fallback = build_suggestion_title(document_name=document_label, text=payload.text)
+	prompt_label = build_suggestion_subject(document_name=document_label, text=payload.text, title=title_fallback)
 	questions_task = llm_service.generate_suggestions(
-		document_name=document_label,
+		document_name=prompt_label,
 		text=payload.text,
 		limit=3,
 	)
@@ -324,7 +325,7 @@ async def create_document_suggestions(
 	# Fallback to heuristic if LLM fails or returns empty
 	if not questions:
 		questions = generate_quick_questions(
-			document_name=document_label,
+			document_name=prompt_label,
 			text=payload.text,
 			limit=3,
 		)
@@ -375,8 +376,10 @@ async def list_recent_suggestions(
 			except Exception:
 				pass
 
-		document = await document_catalog.normalize_document_ref(
-			DocumentRef(id=it.get("documentId"), name=it.get("documentName"))
+		document = await document_catalog.resolve_metadata(
+			raw_document_id=it.get("documentId"),
+			raw_document_name=it.get("documentName"),
+			blob_name=blob_name,
 		)
 		title = (it.get("title") or "").strip() or build_suggestion_title(
 			document_name=document.name or it.get("documentName") or it.get("documentId"),
