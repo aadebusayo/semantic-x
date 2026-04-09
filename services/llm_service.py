@@ -211,6 +211,19 @@ class AzureOpenAILLMService:
             max_completion_tokens=self._max_tokens,
         )
 
+        if _is_hidden_reasoning_exhaustion(response):
+            logger.info(
+                "answer: retrying with higher token budget and minimal reasoning for deployment=%r",
+                self._deployment,
+            )
+            response = await self._create_chat_completion(
+                model=self._deployment,
+                messages=messages,
+                temperature=self._temperature,
+                max_completion_tokens=min(max(self._max_tokens * 2, 4000), 12000),
+                reasoning_effort="minimal",
+            )
+
         text = ""
         if response.choices and response.choices[0].message:
             msg = response.choices[0].message
