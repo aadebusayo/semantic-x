@@ -353,6 +353,27 @@ class CosmosSuggestionsRepository(_CosmosBase):
         except Exception:
             return
 
+    async def clear_all(self) -> int:
+        if self._container is None:
+            count = len(self._mem.all_items())
+            self._mem._items.clear()
+            return count
+
+        query = "SELECT c.id, c.document_id FROM c"
+        items_iter = self._container.query_items(query=query, parameters=[])
+        deleted = 0
+        async for item in items_iter:
+            item_id = item.get("id")
+            partition_key = item.get("document_id")
+            if not item_id or not partition_key:
+                continue
+            try:
+                await self._container.delete_item(item=item_id, partition_key=partition_key)
+                deleted += 1
+            except Exception:
+                continue
+        return deleted
+
 
 class CosmosEntityRepository(_CosmosBase):
     _fallback_file_object_type = 1
@@ -381,6 +402,12 @@ class CosmosEntityRepository(_CosmosBase):
             return value, ""
         name, ext = value.rsplit(".", 1)
         return name, f".{ext}"
+
+    def _file_object_types(self) -> List[int]:
+        object_types = [self._file_object_type]
+        if self._file_object_type != self._fallback_file_object_type:
+            object_types.append(self._fallback_file_object_type)
+        return object_types
 
     async def _query_document_by_id(self, *, entity_id: str, object_type: int) -> Optional[Dict[str, Any]]:
         if self._container is None:
@@ -425,9 +452,7 @@ class CosmosEntityRepository(_CosmosBase):
             return None
 
         candidates: List[Dict[str, Any]] = []
-        object_types = [self._file_object_type]
-        if self._file_object_type != self._fallback_file_object_type:
-            object_types.append(self._fallback_file_object_type)
+        object_types = self._file_object_types()
 
         if self._container is None:
             for item in self._mem.all_items():
@@ -436,23 +461,35 @@ class CosmosEntityRepository(_CosmosBase):
                 if str(item.get("Name") or "") != name:
                     continue
                 item_ext = str(item.get("DocExtension") or "")
-                if item_ext.lower() != extension.lower():
+                if extension and item_ext.lower() != extension.lower():
                     continue
                 candidates.append(item)
                 if len(candidates) >= 2:
                     break
         else:
-            query = (
-                "SELECT TOP 2 c.id, c.Name, c.DocExtension, c.BasePathId, c.ObjectType, c.ContentType "
-                "FROM c WHERE c.Name = @name AND LOWER(c.DocExtension) = @extension AND ARRAY_CONTAINS(@objectTypes, c.ObjectType)"
-            )
-            items_iter = self._container.query_items(
-                query=query,
-                parameters=[
+            if extension:
+                query = (
+                    "SELECT TOP 2 c.id, c.Name, c.DocExtension, c.BasePathId, c.ObjectType, c.ContentType "
+                    "FROM c WHERE c.Name = @name AND LOWER(c.DocExtension) = @extension AND ARRAY_CONTAINS(@objectTypes, c.ObjectType)"
+                )
+                parameters = [
                     {"name": "@name", "value": name},
                     {"name": "@extension", "value": extension.lower()},
                     {"name": "@objectTypes", "value": object_types},
-                ],
+                ]
+            else:
+                query = (
+                    "SELECT TOP 2 c.id, c.Name, c.DocExtension, c.BasePathId, c.ObjectType, c.ContentType "
+                    "FROM c WHERE c.Name = @name AND ARRAY_CONTAINS(@objectTypes, c.ObjectType)"
+                )
+                parameters = [
+                    {"name": "@name", "value": name},
+                    {"name": "@objectTypes", "value": object_types},
+                ]
+
+            items_iter = self._container.query_items(
+                query=query,
+                parameters=parameters,
             )
             async for item in items_iter:
                 candidates.append(item)
@@ -462,6 +499,61 @@ class CosmosEntityRepository(_CosmosBase):
         if len(candidates) != 1:
             return None
         return candidates[0]
+
+    async def list_entity_ids(self) -> List[str]:
+        if self._container is None:
+            return [str(item.get("id") or "") for item in self._mem.all_items() if str(item.get("id") or "")]
+
+        query = "SELECT c.id FROM c"
+        items_iter = self._container.query_items(query=query, parameters=[])
+        ids: List[str] = []
+        async for item in items_iter:
+            entity_id = str(item.get("id") or "").strip()
+            if entity_id:
+                ids.append(entity_id)
+        return ids
+
+    async def list_file_entities(self) -> List[Dict[str, Any]]:
+        object_types = self._file_object_types()
+
+        if self._container is None:
+            entities: List[Dict[str, Any]] = []
+            for item in self._mem.all_items():
+                if item.get("ObjectType") in object_types:
+                    entities.append(item)
+            return entities
+
+        query = (
+            "SELECT c.id, c.Name, c.DocExtension, c.BasePathId, c.ObjectType, c.ContentType "
+            "FROM c WHERE ARRAY_CONTAINS(@objectTypes, c.ObjectType)"
+        )
+        items_iter = self._container.query_items(
+            query=query,
+            parameters=[{"name": "@objectTypes", "value": object_types}],
+        )
+        entities: List[Dict[str, Any]] = []
+        async for item in items_iter:
+            entities.append(item)
+        return entities
+
+    async def delete_entity(self, *, entity_id: str, partition_key: Optional[str] = None) -> bool:
+        if not entity_id:
+            return False
+
+        key = partition_key or entity_id
+
+        if self._container is not None:
+            try:
+                await self._container.delete_item(item=entity_id, partition_key=key)
+                return True
+            except Exception:
+                return False
+
+        try:
+            await self._mem.delete_item(item=entity_id, partition_key=key)
+            return True
+        except Exception:
+            return False
 
 
 class CosmosIngestionRepository(_CosmosBase):
@@ -576,7 +668,10 @@ class CosmosIngestionRepository(_CosmosBase):
             "SELECT c.document_id, c.document_name, c.documentId, c.documentName, c.blobName, "
             "c.source, c.status, c.updatedAt FROM c"
         )
-        items_iter = self._container.query_items(query=query, parameters=[])
+        items_iter = self._container.query_items(
+            query=query,
+            parameters=[],
+        )
         out: List[Dict[str, Any]] = []
         async for it in items_iter:
             out.append(it)
@@ -598,3 +693,24 @@ class CosmosIngestionRepository(_CosmosBase):
             await self._mem.delete_item(item=existing["id"], partition_key=existing["document_id"])
         except Exception:
             return
+
+    async def clear_all(self) -> int:
+        if self._container is None:
+            count = len(self._mem.all_items())
+            self._mem._items.clear()
+            return count
+
+        query = "SELECT c.id, c.document_id FROM c"
+        items_iter = self._container.query_items(query=query, parameters=[])
+        deleted = 0
+        async for item in items_iter:
+            item_id = item.get("id")
+            partition_key = item.get("document_id")
+            if not item_id or not partition_key:
+                continue
+            try:
+                await self._container.delete_item(item=item_id, partition_key=partition_key)
+                deleted += 1
+            except Exception:
+                continue
+        return deleted

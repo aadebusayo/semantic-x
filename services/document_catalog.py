@@ -120,6 +120,26 @@ class DocumentCatalogService:
         text = (value or "").strip()
         return text.casefold() if text else None
 
+    @staticmethod
+    def _filename_candidates(
+        *,
+        raw_document_id: Optional[str],
+        raw_document_name: Optional[str],
+        blob_name: Optional[str],
+    ) -> List[str]:
+        candidates: List[str] = []
+        for candidate in (
+            raw_document_name,
+            normalize_storage_display_name(blob_name),
+            normalize_storage_display_name(raw_document_id),
+            document_name_from_id(blob_name),
+            document_name_from_id(raw_document_id),
+        ):
+            text = (candidate or "").strip()
+            if text and text not in candidates:
+                candidates.append(text)
+        return candidates
+
     async def _build_record(
         self,
         *,
@@ -216,9 +236,17 @@ class DocumentCatalogService:
             if by_blob is not None:
                 return by_blob
 
-        name_key = self._normalized_name_key(raw_document_name)
-        if name_key:
-            return self._records_by_name.get(name_key)
+        for filename_candidate in self._filename_candidates(
+            raw_document_id=raw_document_id,
+            raw_document_name=raw_document_name,
+            blob_name=blob_name,
+        ):
+            name_key = self._normalized_name_key(filename_candidate)
+            if not name_key:
+                continue
+            by_name = self._records_by_name.get(name_key)
+            if by_name is not None:
+                return by_name
 
         return None
 
@@ -232,14 +260,26 @@ class DocumentCatalogService:
         storage_name = normalize_storage_display_name(blob_name or raw_document_id or raw_document_name)
         entity = None
 
-        entity_id_candidates = iter_entity_id_candidates(blob_name or raw_document_id)
+        entity_id_candidates: List[str] = []
+        for candidate_source in (raw_document_id, blob_name):
+            for candidate in iter_entity_id_candidates(candidate_source):
+                if candidate not in entity_id_candidates:
+                    entity_id_candidates.append(candidate)
+
         for entity_id_candidate in entity_id_candidates:
             entity = await self._get_entity(entity_id_candidate)
             if entity is not None:
                 break
 
         if entity is None:
-            entity = await self._get_entity_by_filename(raw_document_name or storage_name)
+            for filename_candidate in self._filename_candidates(
+                raw_document_id=raw_document_id,
+                raw_document_name=raw_document_name,
+                blob_name=blob_name,
+            ):
+                entity = await self._get_entity_by_filename(filename_candidate)
+                if entity is not None:
+                    break
 
         if entity is not None:
             resolved_name = build_entity_filename(entity) or raw_document_name or storage_name

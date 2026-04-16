@@ -155,6 +155,42 @@ The script:
     - Otherwise it builds nested path by following parent `BasePathId` chain: `<parentId>/<childId>/.../<id>`
 - For file entities (`ENTITY_FILE_OBJECT_TYPE=1`), canonical search ids are the Entity `id` and the storage blob remains a separate locator
 
+If you want to reset all derived document stores in one pass so hashed residue is removed from Search, ingestion, and recent suggestions before rebuilding, run:
+
+```bash
+python scripts/reset_canonical_stores.py
+```
+
+This script:
+
+- Deletes all current Azure AI Search chunk documents
+- Deletes all rows from the ingestion and document suggestions containers
+- Reprocesses every blob through the canonical Entity-backed ingestion flow
+
+Optional flags:
+
+- `--skip-search-clear` to preserve existing Search chunks
+- `--skip-cosmos-clear` to preserve existing ingestion and suggestion rows
+
+If you want to reconcile the authoritative source state first by deleting blobs that do not have valid `Entity` file metadata and deleting file `Entity` rows that no longer have a blob, run:
+
+```bash
+python scripts/reconcile_blob_entity_sources.py
+```
+
+To apply the deletions instead of only generating a report, run:
+
+```bash
+python scripts/reconcile_blob_entity_sources.py --apply
+```
+
+This script:
+
+- Matches blob basenames to `Entity.id`
+- Deletes blobs whose matching file `Entity` is missing or has no usable `Name`
+- Deletes file `Entity` rows whose blob no longer exists
+- Writes a reconciliation report to `reports/blob_entity_source_reconciliation.json`
+
 Set these env vars before running:
 
 - `COSMOS_ENTITY_CONTAINER` (default `Entity`)

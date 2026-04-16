@@ -96,7 +96,7 @@ function dateLabel(iso) {
 
 async function loadHistory() {
   try {
-    var items = await api('/chats?limit=40');
+    var items = await api('/chats?limit=200');
     chatList.innerHTML = '';
     if (!items.length) {
       chatList.innerHTML = '<p style="padding:10px 6px;font-size:0.78rem;color:rgba(255,255,255,0.28)">No chats yet</p>';

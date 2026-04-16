@@ -115,7 +115,7 @@ class Settings(BaseSettings):
     azure_speech_voice: str = Field(default="en-US-AvaMultilingualNeural")
 
     # Chat behavior
-    max_chat_messages: int = Field(default=60)
+    max_chat_messages: int = Field(default=200)
     default_user_id: str = Field(default="anonymous")
 
 

@@ -5,6 +5,7 @@ from dataclasses import dataclass
 
 from models.infosearch_api import DocumentRef
 from services.azure_ai_search import AzureAISearchService
+from services.cosmos_repositories import CosmosChatRepository, CosmosIngestionRepository, CosmosSuggestionsRepository
 from services.document_catalog import DocumentCatalogService
 from services.ingestion_worker import IngestionWorker
 
@@ -121,9 +122,39 @@ def test_search_prioritizes_direct_document_as_first_citation():
             top_k=2,
         )
 
-        assert [citation.document_id for citation in citations] == ["target-doc", "other-doc"]
-        assert [citation.rank for citation in citations] == [1, 2]
+        assert [citation.document_id for citation in citations] == ["target-doc"]
+        assert [citation.rank for citation in citations] == [1]
         assert citations[0].excerpt == "Target fallback excerpt."
+
+    asyncio.run(_run())
+
+
+def test_scoped_search_without_filter_fields_returns_no_cross_document_results():
+    async def _run():
+        service = AzureAISearchService(
+            endpoint="https://example.search.windows.net",
+            index_name="docs",
+            api_key="key",
+            semantic_config="default",
+            content_field="content",
+            vector_field="contentVector",
+            doc_id_field="documentId",
+            doc_name_field="documentName",
+            filter_doc_id_field=None,
+            filter_doc_name_field=None,
+            max_excerpt_chars=280,
+            min_citation_score=0.0,
+        )
+        service._client = _SearchClientForPreferredDoc()
+        service._vector_query_enabled = False
+
+        citations = await service.search(
+            query="policy terms",
+            document=DocumentRef(id="target-doc", name="target.pdf"),
+            top_k=2,
+        )
+
+        assert citations == []
 
     asyncio.run(_run())
 
@@ -167,12 +198,14 @@ class _BlobInfo:
     etag: str
     last_modified_iso: str
     size: int
+    is_directory: bool = False
 
 
 class _BlobSource:
     def __init__(self, blobs, content: bytes):
         self._blobs = blobs
         self._content = content
+        self.downloaded = []
 
     async def open(self):
         return None
@@ -189,6 +222,7 @@ class _BlobSource:
             count += 1
 
     async def download(self, *, blob_name: str):
+        self.downloaded.append(blob_name)
         return self._content
 
 
@@ -262,9 +296,67 @@ class _EntityRepo:
     async def find_document_by_filename(self, *, filename: str):
         if filename in {"Manual.pdf", "manual.pdf"}:
             return {"id": "manual", "Name": "Manual", "DocExtension": ".pdf"}
+        if filename == "Manual":
+            return {"id": "manual", "Name": "Manual", "DocExtension": ".pdf"}
         if filename == "target.pdf":
             return {"id": "target-doc", "Name": "target", "DocExtension": ".pdf"}
         return None
+
+
+def test_document_catalog_restores_name_from_extensionless_reference():
+    async def _run():
+        ingestion_repo = _IngestionRepo(prior=None)
+        ingestion_repo.documents = []
+        catalog = DocumentCatalogService(
+            ingestion_repo=ingestion_repo,
+            entity_repo=_EntityRepo(),
+            blob_source=None,
+        )
+
+        metadata = await catalog.resolve_metadata(
+            raw_document_id=None,
+            raw_document_name="Manual",
+        )
+
+        assert metadata.id == "manual"
+        assert metadata.name == "Manual.pdf"
+
+    asyncio.run(_run())
+
+
+def test_chat_repository_retains_configured_number_of_messages():
+    async def _run():
+        repo = CosmosChatRepository(
+            endpoint=None,
+            key=None,
+            database="infosearch",
+            container="chats",
+            default_user_id="user-1",
+            max_chat_messages=4,
+        )
+
+        for idx in range(3):
+            await repo.append_turns(
+                chat_id="chat-1",
+                user_id="user-1",
+                title="Chat",
+                user_message=f"user-{idx}",
+                assistant_message=f"assistant-{idx}",
+            )
+
+        item = await repo.get_chat(chat_id="chat-1", user_id="user-1")
+
+        assert item is not None
+        assert [turn["content"] for turn in item["turns"]] == [
+            "user-0",
+            "assistant-0",
+            "user-1",
+            "assistant-1",
+            "user-2",
+            "assistant-2",
+        ]
+
+    asyncio.run(_run())
 
 
 class _Settings:
@@ -380,3 +472,125 @@ def test_preview_document_is_limited_to_selected_document():
         assert citations[0].excerpt == "Target fallback excerpt."
 
     asyncio.run(_run())
+
+
+def test_ingestion_repository_clear_all_removes_rows():
+    async def _run():
+        repo = CosmosIngestionRepository(
+            endpoint=None,
+            key=None,
+            database="infosearch",
+            container="ingestion",
+        )
+        await repo.upsert_status(
+            document_id="doc-1",
+            document_name="Doc 1.pdf",
+            blob_name="doc-1.pdf",
+            storage_container="docs",
+            etag="etag-1",
+            last_modified_iso="2026-04-16T00:00:00+00:00",
+            status="processed",
+        )
+        await repo.upsert_status(
+            document_id="doc-2",
+            document_name="Doc 2.pdf",
+            blob_name="doc-2.pdf",
+            storage_container="docs",
+            etag="etag-2",
+            last_modified_iso="2026-04-16T00:00:00+00:00",
+            status="processed",
+        )
+
+        deleted = await repo.clear_all()
+
+        assert deleted == 2
+        assert await repo.list_documents() == []
+
+    asyncio.run(_run())
+
+
+def test_suggestions_repository_clear_all_removes_rows():
+    async def _run():
+        repo = CosmosSuggestionsRepository(
+            endpoint=None,
+            key=None,
+            database="infosearch",
+            container="suggestions",
+        )
+        await repo.upsert_questions(
+            document_id="doc-1",
+            document_name="Doc 1.pdf",
+            title="Doc 1",
+            questions=["Q1"],
+            blob_name="doc-1.pdf",
+        )
+        await repo.upsert_questions(
+            document_id="doc-2",
+            document_name="Doc 2.pdf",
+            title="Doc 2",
+            questions=["Q2"],
+            blob_name="doc-2.pdf",
+        )
+
+        deleted = await repo.clear_all()
+
+        assert deleted == 2
+        assert await repo.list_recent(limit=10) == []
+
+    asyncio.run(_run())
+
+
+def test_ingestion_worker_ignores_directory_like_entries(monkeypatch):
+    async def _run():
+        directory_blob = _BlobInfo(
+            name="orphan-directory-id",
+            etag="etag-dir",
+            last_modified_iso="2026-03-26T12:00:00+00:00",
+            size=0,
+            is_directory=True,
+        )
+        file_blob = _BlobInfo(
+            name="folder/manual.pdf",
+            etag="etag-file",
+            last_modified_iso="2026-03-26T12:00:00+00:00",
+            size=128,
+        )
+        blob_source = _BlobSource([directory_blob, file_blob], b"updated-pdf-content")
+        search = _SearchRecorder()
+        ingestion_repo = _IngestionRepo(prior=None)
+        suggestions_repo = _SuggestionsRepo()
+
+        monkeypatch.setattr(
+            "services.ingestion_worker.extract_text",
+            lambda *, blob_name, content: "Updated PDF text for indexing.",
+        )
+
+        worker = IngestionWorker(
+            settings=_Settings(),
+            blob_source=blob_source,
+            search_service=search,
+            ingestion_repo=ingestion_repo,
+            suggestions_repo=suggestions_repo,
+            document_catalog=DocumentCatalogService(
+                ingestion_repo=ingestion_repo,
+                entity_repo=_EntityRepo(),
+                blob_source=blob_source,
+            ),
+        )
+
+        processed = await worker.run_once(limit=10)
+
+        assert processed == 1
+        assert blob_source.downloaded == ["folder/manual.pdf"]
+        assert len(search.calls) == 1
+        assert search.calls[0]["document_id"] == "manual"
+
+    asyncio.run(_run())
+
+
+def test_scoped_filter_prefers_document_id_over_name():
+    service = _make_search_service(_SearchClientForPreferredDoc())
+
+    filter_expr = service._build_filter(DocumentRef(id="target-doc", name="target.pdf"))
+
+    assert filter_expr == "documentId eq 'target-doc'"

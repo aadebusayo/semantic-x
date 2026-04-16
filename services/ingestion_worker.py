@@ -22,6 +22,10 @@ def _safe_chunk_id(document_id: str, chunk_index: int) -> str:
     return f"chunk_{digest}_{chunk_index}"
 
 
+def _should_skip_blob(blob) -> bool:
+    return bool(getattr(blob, "is_directory", False) or str(getattr(blob, "name", "")).endswith("/"))
+
+
 class IngestionWorker:
     def __init__(
         self,
@@ -98,8 +102,7 @@ class IngestionWorker:
             if self._stopping.is_set():
                 break
 
-            # Skip folders
-            if blob.name.endswith("/"):
+            if _should_skip_blob(blob):
                 continue
 
             prior = await self._ingestion_repo.get(blob_name=blob.name)
@@ -203,7 +206,7 @@ class IngestionWorker:
 
         active_blob_names = set()
         async for blob in self._blob_source.list_blobs(limit=None):
-            if blob.name.endswith("/"):
+            if _should_skip_blob(blob):
                 continue
             active_blob_names.add(blob.name)
 

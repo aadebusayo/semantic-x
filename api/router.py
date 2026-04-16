@@ -241,7 +241,7 @@ async def preview_document(
 @router.get("/chats", response_model=list[ChatHistoryItem])
 async def list_chats(
 	user_id: Optional[str] = Query(default=None),
-	limit: int = Query(default=20, ge=1, le=100),
+	limit: int = Query(default=50, ge=1, le=500),
 	chat_repo: CosmosChatRepository = Depends(get_chat_repo),
 ):
 	items = await chat_repo.list_chats(user_id=user_id, limit=limit)

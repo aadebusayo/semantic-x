@@ -98,18 +98,11 @@ class AzureAISearchService:
         if not document:
             return None
 
-        filters: List[str] = []
-
         if document.id and self._filter_doc_id_field:
-            filters.append(f"{self._filter_doc_id_field} eq '{_escape_odata_string(document.id)}'")
+            return f"{self._filter_doc_id_field} eq '{_escape_odata_string(document.id)}'"
 
         if document.name and self._filter_doc_name_field:
-            filters.append(f"{self._filter_doc_name_field} eq '{_escape_odata_string(document.name)}'")
-
-        if filters:
-            if len(filters) == 1:
-                return filters[0]
-            return " or ".join(f"({filter_expr})" for filter_expr in filters)
+            return f"{self._filter_doc_name_field} eq '{_escape_odata_string(document.name)}'"
 
         # No filterable field configured
         return None
@@ -298,46 +291,31 @@ class AzureAISearchService:
 
         filter_expr = self._build_filter(document)
         try:
-            preferred_results: List[Dict[str, Any]] = []
             if document is not None:
-                if filter_expr:
-                    preferred_results = await self._search_results(
-                        client=client,
-                        query=query,
-                        top_k=top_k,
-                        filter_expr=filter_expr,
-                        allow_vector=True,
+                if not filter_expr:
+                    logger.warning(
+                        "Scoped search requested for document id=%r name=%r but no filterable document fields are configured",
+                        document.id,
+                        document.name,
                     )
-                    if not preferred_results:
-                        preferred_results = await self._search_results(
-                            client=client,
-                            query="*",
-                            top_k=top_k,
-                            filter_expr=filter_expr,
-                            allow_vector=False,
-                        )
+                    return []
 
-                if preferred_results:
-                    return self._to_citations(preferred_results[:top_k])
-
-                global_results = await self._search_results(
+                scoped_results = await self._search_results(
                     client=client,
                     query=query,
                     top_k=top_k,
-                    filter_expr=None,
+                    filter_expr=filter_expr,
                     allow_vector=True,
                 )
-
-                if not preferred_results:
-                    for result in global_results:
-                        if self._matches_document(result, document):
-                            preferred_results = [result]
-                            break
-
-                if preferred_results:
-                    return self._to_citations(preferred_results[:top_k])
-
-                return self._to_citations(global_results)
+                if not scoped_results:
+                    scoped_results = await self._search_results(
+                        client=client,
+                        query="*",
+                        top_k=top_k,
+                        filter_expr=filter_expr,
+                        allow_vector=False,
+                    )
+                return self._to_citations(scoped_results[:top_k])
 
             plain_results = await self._search_results(
                 client=client,
@@ -359,25 +337,22 @@ class AzureAISearchService:
 
         filter_expr = self._build_filter(document)
         try:
-            if filter_expr:
-                results = await self._search_results(
-                    client=client,
-                    query="*",
-                    top_k=top_k,
-                    filter_expr=filter_expr,
-                    allow_vector=False,
+            if not filter_expr:
+                logger.warning(
+                    "Document preview requested for document id=%r name=%r but no filterable document fields are configured",
+                    document.id,
+                    document.name,
                 )
-                return self._to_citations(results)
+                return []
 
             results = await self._search_results(
                 client=client,
                 query="*",
-                top_k=max(top_k * 3, top_k),
-                filter_expr=None,
+                top_k=top_k,
+                filter_expr=filter_expr,
                 allow_vector=False,
             )
-            filtered = [result for result in results if self._matches_document(result, document)]
-            return self._to_citations(filtered[:top_k])
+            return self._to_citations(results)
         except Exception as e:
             logger.error("Document preview failed: %s", e, exc_info=True)
             return []

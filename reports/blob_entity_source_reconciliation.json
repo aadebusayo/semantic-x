@@ -1,0 +1,18 @@
+{
+  "summary": {
+    "blobCount": 17,
+    "fileEntityCount": 11,
+    "deleteBlobCount": 0,
+    "deleteDirectoryLikeBlobCount": 0,
+    "deleteEntityCount": 0,
+    "skippedDirectoryLikeBlobCount": 0,
+    "keptBlobCount": 17,
+    "keptEntityCount": 11,
+    "apply": false,
+    "deletedBlobCount": 0,
+    "deletedEntityCount": 0
+  },
+  "deleteBlobs": [],
+  "deleteEntities": [],
+  "skippedDirectoryLikeBlobs": []
+}
